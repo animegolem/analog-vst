@@ -6,8 +6,9 @@
 /// Circuit models run at no less than this rate. Trapezoidal integration evaluates the analog
 /// response at a frequency stretched by about (pi f / rate)^2 / 3, so the error at 20 kHz grows with
 /// how steeply the response falls there. 384 kHz measured 0.12 dB on the TS808 at full treble;
-/// 576 kHz measures 0.05 dB.
-pub const MIN_CIRCUIT_RATE: f64 = 576_000.0;
+/// 576 kHz measures 0.05 dB. This circuit at tone = 0 falls about 41 dB by 20 kHz: 576 kHz
+/// measured 0.124 dB there and 672 kHz measures 0.090 dB.
+pub const MIN_CIRCUIT_RATE: f64 = 672_000.0;
 const PASSBAND_HZ: f64 = 20_000.0;
 const ATTENUATION_DB: f64 = 120.0;
 

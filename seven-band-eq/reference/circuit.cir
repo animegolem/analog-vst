@@ -6,9 +6,12 @@
 * Ideal source; 1Meg external load; LEDs and supply decoupling omitted.
 * 0dBFS = 0.5V peak pending rail check.
 .subckt opamp inp inn out
-G1 0 p inp inn 100
-Rp p 0 1k
-Cp p 0 1.591549430919u
+* A0 = gm*Rp = 1e5, pole = 1/(2*pi*Rp*Cp) = 100 Hz: the same op-amp as the template's
+* gm=100, Rp=1k form. With gm=100, ngspice 45 stops with "Timestep too small" 8 ms into the
+* 0 dBFS sweep of this circuit (nine op-amps); with these values the same section completes.
+G1 0 p inp inn 1e-3
+Rp p 0 1e8
+Cp p 0 15.91549430919p
 E1 out 0 p 0 1
 .ends
 $SOURCE

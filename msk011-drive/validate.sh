@@ -43,7 +43,7 @@ while read -r -u 3 name controls; do
   fi
   echo "== $name: rendering the model and comparing"
   # shellcheck disable=SC2086
-  ./target/release/render validation/pack/pack.wav "$dir/model.wav" $controls
+  (cd harness && uv run --quiet harness model-sections ../validation/pack/pack.json $controls -o "../$dir/model.wav")
   if (cd harness && uv run --quiet harness compare ../validation/pack/pack.json "../$dir/reference.wav" "../$dir/model.wav" -o "../$dir"); then
     summary+=$'\n'"| $name | PASS |"
   else
