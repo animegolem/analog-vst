@@ -153,7 +153,17 @@ ngspice 45, single runs, before the validation.
 
 ## Solver change in this Project
 
-`dsp/src/circuit.rs` differs from the template in the joint Newton solve. At Level 1 with a 5 V input, the template's Solver did not converge and its output ran to 1e21 V on the first cycle. The cause was one scale applied to the whole Newton step: Q5's base, driven through C7, moves 0.7 V in one circuit sample, the extrapolated first guess put that junction at 1.58 V forward, and the step back was scaled by the 60 V the collector had to move. The Solver now limits each junction's move the way SPICE does, and lets the other voltages take the whole step. The converged answer is unchanged. In a debug build the Solver asserts that every joint solve converged, and a unit test drives the Model with overdriven sines at four frequencies.
+`dsp/src/circuit.rs` differs from the template in the joint Newton solve. At Level 1 with a 5 V input, the template's Solver did not converge and its output ran to 1e21 V on the first cycle. The cause was one scale applied to the whole Newton step: Q5's base, driven through C7, moves 0.7 V in one circuit sample, the extrapolated first guess put that junction at 1.58 V forward, and the step back was scaled by the 60 V the collector had to move. The Solver now limits each junction's move the way SPICE does, and lets the other voltages take the whole step. The equations being solved are unchanged. A unit test drives the Model with overdriven sines at four frequencies and requires every joint solve to converge.
+
+Bad samples are contained instead of asserted on, so nothing here can panic on the audio thread:
+
+- **A solve that fails.** The joint solve has 200 iterations and stops when no port's Newton correction reaches 1 nV. If it runs out, or the new capacitor states or the output are not finite, that sample is discarded: capacitor states, port voltages and device currents stay as the last good sample left them, the output repeats that sample's value, and a counter goes up (`Processor::failed_solves`). The next sample starts from the last good state.
+- **A non-finite input sample** (NaN or infinity) is treated as silence (0) before the oversampling filters, and again at the Solver's input.
+- **A NaN Control value** is rejected: the Control keeps its value (its default when the Plugin is built). Infinite values clamp to the ends of travel.
+
+Unit tests force each case: an iteration bound of 1 in the middle of a clipped sine, inputs of 1e6 V and 1e300 V, NaN and infinite samples, and a NaN Control.
+
+These changes came after the Full Validation recorded above, which has not been rerun. Rendering the full Pack again with the changed Solver gave the same samples as the validated captures at `default`, `zero` and `high`. At `full`, 735 of 7,353,600 samples differ, by at most 7.3e-12 of full scale, all in the silence after the -40 dB sweep; the cause is the convergence test, which now reads the Newton correction instead of the difference of the voltages before and after the step. Comparing that render with the saved reference gave a report identical to the recorded one.
 
 ## Build and use
 

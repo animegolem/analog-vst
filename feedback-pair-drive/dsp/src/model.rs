@@ -184,8 +184,8 @@ mod tests {
     #[test]
     fn overdriven_sines_stay_bounded_and_converge() {
         // Q3 and Q5 saturate and cut off on every clipped cycle, and Q5's base is driven through
-        // C7 at up to 0.7 V per circuit sample. In a debug build the Solver asserts that every
-        // joint Newton solve converged; here the output must also stay inside what the rails
+        // C7 at up to 0.7 V per circuit sample. Every joint Newton solve must converge (the
+        // Solver counts the ones that do not), and the output must stay inside what the rails
         // allow: `out` is `c5` less C5's 5.8 V, and `c5` lies between the rails.
         const RAIL_V: f64 = 12.0;
         const RATE: f64 = 576_000.0;
@@ -209,6 +209,100 @@ mod tests {
                     "level {level}, {freq} Hz, {volts} V: output {y} V at sample {k}"
                 );
             }
+            assert_eq!(c.failed_solves(), 0, "level {level}, {freq} Hz, {volts} V");
         }
+    }
+
+    #[test]
+    fn a_failed_solve_is_held_and_the_circuit_recovers() {
+        // Force the joint Newton solve to run out of iterations (a bound of 1) in the middle of
+        // a clipped sine. Each failed sample must repeat the last valid output and leave the
+        // circuit where it was; once the bound is restored the solves converge again and silence
+        // brings the output back to rest.
+        const RATE: f64 = 576_000.0;
+        const RAIL_V: f64 = 12.0;
+        let drive = |k: usize| 5.0 * (std::f64::consts::TAU * 1000.0 * k as f64 / RATE).sin();
+        let (_, mut c) = build(1.0);
+        let mut last = 0.0;
+        for k in 0..2000 {
+            last = c.tick(drive(k));
+        }
+        assert_eq!(c.failed_solves(), 0);
+
+        c.limit_joint_iterations(1);
+        let mut held = 0;
+        for k in 2000..4000 {
+            let failed_before = c.failed_solves();
+            let y = c.tick(drive(k));
+            assert!(y.is_finite() && y.abs() < RAIL_V, "output {y} V at sample {k}");
+            if c.failed_solves() > failed_before {
+                assert_eq!(y, last, "a failed sample repeats the last valid output");
+                held += 1;
+            }
+            last = y;
+        }
+        assert!(
+            held > 1000,
+            "the bound of 1 forced only {held} failures in 2000 samples"
+        );
+        assert_eq!(c.failed_solves(), held);
+
+        c.limit_joint_iterations(200);
+        for k in 4000..8000 {
+            let y = c.tick(drive(k));
+            assert!(y.is_finite() && y.abs() < RAIL_V, "output {y} V at sample {k}");
+        }
+        assert_eq!(c.failed_solves(), held, "solves converge again under the normal bound");
+        // Two seconds of silence: the last tenth of a second is at rest.
+        for k in 0..1_152_000 {
+            let y = c.tick(0.0);
+            assert!(y.is_finite() && y.abs() < RAIL_V);
+            assert!(k < 1_094_400 || y.abs() < 1e-6, "output {y} V after {k} silent samples");
+        }
+        assert_eq!(c.failed_solves(), held);
+    }
+
+    #[test]
+    fn absurd_and_non_finite_input_cannot_poison_the_circuit() {
+        // Inputs far outside any audio level, then NaN and infinities, then silence. Whatever the
+        // solve does with the absurd samples, the output stays finite, and five seconds of
+        // silence bring it back to rest.
+        let (_, mut c) = build(1.0);
+        let bad = [
+            1e6,
+            -1e6,
+            1e300,
+            -1e300,
+            f64::MAX,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for round in 0..64 {
+            for u in bad {
+                let y = c.tick(u);
+                assert!(y.is_finite(), "output {y} for input {u} in round {round}");
+            }
+        }
+        // The samples that did converge charged the capacitors far beyond the rails, so the
+        // way back is the Circuit's own slow discharge: measured at rest again after about 4 s.
+        let failed = c.failed_solves();
+        assert!(
+            failed > 0,
+            "none of the absurd samples failed, so this did not test containment"
+        );
+        for k in 0..2_880_000 {
+            let y = c.tick(0.0);
+            assert!(y.is_finite());
+            assert!(k < 2_592_000 || y.abs() < 1e-6, "output {y} V after {k} silent samples");
+        }
+        assert_eq!(c.failed_solves(), failed, "silence solves normally afterwards");
+
+        // A NaN sample is a silent sample: from rest, the circuit does not move.
+        let (_, mut c) = build(0.5);
+        for u in [f64::NAN, 0.0, f64::INFINITY, 0.0, 0.0] {
+            assert!(c.tick(u).abs() < 1e-6);
+        }
+        assert_eq!(c.failed_solves(), 0);
     }
 }

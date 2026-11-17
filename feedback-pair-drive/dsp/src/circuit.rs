@@ -11,10 +11,11 @@
 // Matrix code reads more clearly with explicit row and column indices.
 #![allow(clippy::needless_range_loop)]
 
-/// Bound on the joint Newton solve's iterations per sample.
-const JOINT_MAX_ITERATIONS: usize = 64;
+/// Bound on the joint Newton solve's iterations per sample. A solve that uses them all has
+/// failed: `tick` holds the circuit at its last valid state for that sample.
+const JOINT_MAX_ITERATIONS: usize = 200;
 
-/// The joint Newton solve stops when no port voltage moved by this much (volts).
+/// The joint Newton solve stops when no port's Newton correction reaches this much (volts).
 const JOINT_TOLERANCE_V: f64 = 1e-9;
 
 /// Conductance standing in for an inductor at DC.
@@ -310,6 +311,12 @@ pub struct Circuit {
     i_used: Vec<f64>,
     i_prev: Vec<f64>,
     operating_point: Vec<f64>,
+    /// Output of the last sample whose solve succeeded; a failed sample repeats it.
+    y: f64,
+    /// Samples whose solve failed and were held at the last valid state. Saturates.
+    failed_solves: u64,
+    /// Iterations the joint solve may use, at most `JOINT_MAX_ITERATIONS`. Only tests lower it.
+    joint_iterations: usize,
 }
 
 impl Circuit {
@@ -404,6 +411,9 @@ impl Circuit {
             i_used: vec![0.0; nn],
             i_prev: vec![0.0; nn],
             operating_point: vec![0.0; nodes],
+            y: 0.0,
+            failed_solves: 0,
+            joint_iterations: JOINT_MAX_ITERATIONS,
             caps,
             ports,
             devices,
@@ -425,6 +435,19 @@ impl Circuit {
         } else {
             panic!("element {index} is not a resistor");
         }
+    }
+
+    /// Samples since construction whose solve failed: the Newton iteration ran out of steps or
+    /// the result was not finite. Each was held at the last valid state and output.
+    pub fn failed_solves(&self) -> u64 {
+        self.failed_solves
+    }
+
+    /// Lowers the joint solve's iteration bound, to force the failure path in a test.
+    #[cfg(test)]
+    pub(crate) fn limit_joint_iterations(&mut self, iterations: usize) {
+        assert!(iterations <= JOINT_MAX_ITERATIONS);
+        self.joint_iterations = iterations;
     }
 
     /// Node voltages at the DC operating point found at construction (index = node - 1).
@@ -652,6 +675,7 @@ impl Circuit {
             }
         }
         self.operating_point.copy_from_slice(&z[..self.nodes]);
+        self.y = node_val(&z, self.output.0) - node_val(&z, self.output.1);
         for (k, &(a, b, g)) in self.caps.iter().enumerate() {
             let v = node_val(&z, a) - node_val(&z, b);
             // Steady state: no capacitor current (x = g v); inductor current i = g v - x carries the
@@ -675,11 +699,17 @@ impl Circuit {
         }
     }
 
-    /// Processes one sample at the circuit's rate.
+    /// Processes one sample at the circuit's rate. Never panics on a bad sample:
+    /// - a non-finite input sample is treated as 0 V;
+    /// - a sample whose solve fails (the joint Newton iteration runs out of steps, or the new
+    ///   state or output is not finite) leaves the capacitor states, port voltages and device
+    ///   currents as the last successful sample left them, returns that sample's output again and
+    ///   counts into `failed_solves`.
     pub fn tick(&mut self, u: f64) -> f64 {
         if self.dirty {
             self.update();
         }
+        let u = if u.is_finite() { u } else { 0.0 };
         let (nx, nn) = (self.caps.len(), self.ports.len());
         let (base, rows) = (nx + 2, nx + 1 + nn);
         self.z[nx] = u;
@@ -706,6 +736,7 @@ impl Circuit {
             };
             self.i_prev[k] = i;
         }
+        let mut solved = true;
         if self.joint {
             // The extrapolated guess can overshoot a junction that is just turning on (a base
             // driven through a capacitor moves 0.7 V a sample here): limit it against the last
@@ -714,7 +745,7 @@ impl Circuit {
                 let span = first..first + dev.ports();
                 dev.limit(&self.v_prev[span.clone()], &mut self.v[span]);
             }
-            self.solve_joint();
+            solved = self.solve_joint();
         } else {
             for _ in 0..32 {
                 self.i_used.copy_from_slice(&self.z[base..]);
@@ -732,19 +763,33 @@ impl Circuit {
                 *a += m * zc;
             }
         }
+        // Second check, on what is about to be committed: the new states and the output.
+        solved &= self.acc[..=nx].iter().all(|a| a.is_finite());
+        if !solved {
+            // Contain the failure. `v_prev` and `i_prev` hold the last successful sample's port
+            // voltages and currents; go back to them. The next sample's first guess then has no
+            // slope, which only costs it iterations.
+            self.v.copy_from_slice(&self.v_prev);
+            self.z[base..].copy_from_slice(&self.i_prev);
+            self.failed_solves = self.failed_solves.saturating_add(1);
+            return self.y;
+        }
         for ((x, &a), &b) in self.x.iter_mut().zip(&self.acc).zip(&self.beta) {
             *x = a + b * *x;
         }
-        self.acc[nx]
+        self.y = self.acc[nx];
+        self.y
     }
 
     /// Newton over all ports at once: v = p + K f(v), with p the linear part of each port voltage.
-    fn solve_joint(&mut self) {
+    /// Returns whether it converged within its iteration bound. When it did not, the port voltages
+    /// and currents it leaves are not a solution and the caller must discard them.
+    fn solve_joint(&mut self) -> bool {
         let nx = self.caps.len();
         let (base, nn) = (nx + 2, self.ports.len());
         let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
         let mut converged = false;
-        for _ in 0..JOINT_MAX_ITERATIONS {
+        for _ in 0..self.joint_iterations {
             self.jac.data.fill(0.0);
             for &(dev, first) in &self.devices {
                 let np = dev.ports();
@@ -770,7 +815,10 @@ impl Circuit {
             // (a collector swinging 20 V in a sample) move the whole way: the system is linear in
             // them. One scale for all ports would hold a junction that must fall by a volt to
             // the pace of the largest port.
-            let (mut big, mut limited) = (0.0f64, false);
+            // Convergence is judged on the raw Newton corrections, not on `new - old` after the
+            // update, which loses digits to cancellation. A NaN correction fails the comparison.
+            let small = (0..nn).all(|k| self.jac.at(k, nn).abs() < JOINT_TOLERANCE_V);
+            let mut limited = false;
             for &(dev, first) in &self.devices {
                 let np = dev.ports();
                 let (mut old, mut new) = ([0.0; 2], [0.0; 2]);
@@ -779,25 +827,22 @@ impl Circuit {
                     new[k] = old[k] - self.jac.at(first + k, nn);
                 }
                 limited |= dev.limit(&old[..np], &mut new[..np]);
-                for k in 0..np {
-                    big = big.max((new[k] - old[k]).abs());
-                    self.v[first + k] = new[k];
-                }
+                self.v[first..first + np].copy_from_slice(&new[..np]);
             }
-            if !limited && big < JOINT_TOLERANCE_V {
+            if !limited && small {
                 converged = true;
                 break;
             }
         }
-        debug_assert!(
-            converged,
-            "joint Newton solve did not converge in {JOINT_MAX_ITERATIONS} iterations"
-        );
+        if !converged {
+            return false;
+        }
         for &(dev, first) in &self.devices {
             let np = dev.ports();
             dev.eval(&self.v[first..first + np], &mut i, &mut j);
             self.z[base + first..base + first + np].copy_from_slice(&i[..np]);
         }
+        true
     }
 
     /// Bound on how far earlier devices' port voltages are from consistent with the currents that
