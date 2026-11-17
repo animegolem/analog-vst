@@ -141,8 +141,8 @@ One pull request per Project. Build Briefs are in =triage/triage.md=.
 - DONE Tonemender: =stack-boost/= (Three-Band Stack Boost), all-PASS at 6 Settings, Installed
 - DONE Kinks SIGN: =precision-rectifier/= (Precision Rectifier), PASS at its one Setting, Installed
 - DONE Mini Drive: =three-transistor-drive/= (Three-Transistor Drive), all-PASS at 4 Settings, Installed, Offline-only
-** TODO Carry junction limiting and failed-solve containment to msk011-drive and four-stage-fuzz
-Both have the template's joint solve, which commits an unconverged result in a release build.
+** TODO Carry junction limiting and failed-solve containment to the other transistor Projects
+msk011-drive has the template's joint solve, which commits an unconverged result in a release build. four-stage-fuzz was not examined.
 ** TODO Decide which Upstream Patches to send
 Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =upstream-patches/NOTES.md=.
 ** DONE Port the section-reset harness to msk011-drive
