@@ -1,0 +1,8 @@
+# Settings to validate: a name, then control=rotation pairs (0 = fully counter-clockwise,
+# 1 = fully clockwise). Controls not listed use their defaults.
+# Level is a linear rheostat in the input leg, so gain rises steeply near the top: about 0.97x at
+# 0, 1.9x at 0.5, 8.5x at 0.9 and 60x at 1. Level at 0 does not mute this Circuit.
+default
+zero level=0
+high level=0.9
+full level=1
