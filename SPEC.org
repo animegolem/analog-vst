@@ -1,0 +1,156 @@
+#+TITLE: analog-vst
+#+OPTIONS: num:t
+
+/Status: draft. The Objective Function, the goals, and the non-goals are proposed by the maintainer seat and wait on Golem's answers to the Open Questions./
+
+* Objective Function
+A shelf of old circuits you can play. Each one is the circuit itself, solved sample by sample, with a measured error against a simulation of the same circuit, so "it sounds like the pedal" is a number and not a mood.
+
+The feeling: opening a schematic and hearing it an afternoon later, and trusting what you hear.
+
+The bigger version: the pipeline from a published schematic to a validated plugin becomes cheap and routine enough that the catalog of 104 candidates is a queue, not a wish list, and what we learn on the way goes back upstream as patches.
+
+* Problem and Outcome
+The analog-to-vst skill and template turn one circuit into one plugin. Doing that for many circuits exposes what one circuit does not: solver cost on transistor-heavy circuits, false validation failures, parts the solver cannot model, and source values that disagree.
+
+Outcome: a set of Projects that each pass Full Validation at every Setting, plus the Upstream Patches that the work showed were needed.
+
+** Core goals
+1. Every Installed Plugin has passed Full Validation at every Setting.
+2. Each Project states its sources and every modeling assumption.
+3. Fixes that belong to the template go upstream, not into one Project.
+4. The cost of a Plugin (percent of one core at 48 kHz, stereo) is measured on an idle machine and stated.
+
+* Explicit Non-Goals
+- Matching measured hardware. Validation compares two simplified descriptions of one Circuit.
+- Effects with no Circuit: digital reverbs, firmware delays, "inspired by" sound design.
+- Faceplates, branded names, or anything that suggests endorsement.
+- Distributing binaries (open: see Open Questions).
+
+* Domain Model Glossary
+** Modeling
+The work of turning one published circuit into one plugin.
+
+- Circuit :: A specific analog circuit, known from published component values and topology.
+  /Avoid/: pedal, unit, device
+- Netlist :: The SPICE description of a Circuit, in =reference/circuit.cir=. It is the ground truth.
+  /Avoid/: reference, schematic, SPICE file
+- Model :: The Rust description of the same Circuit, in =dsp/src/model.rs=, part for part with the Netlist.
+  /Avoid/: DSP, implementation
+- Plugin :: The VST3 and CLAP bundles built from one Model.
+  /Avoid/: filter, effect, VST
+- Project :: One directory that holds one Circuit's Netlist, Model, Settings, and validation results.
+  /Avoid/: plugin (for the directory), build
+- Control :: One knob of a Plugin, with a value from 0 to 1.
+  /Avoid/: parameter, pot (a pot is a part in the Circuit)
+- Solver :: The template code that computes a Model's output for each sample.
+- Offline-only :: A Plugin that costs more than one core, so it can be bounced or frozen but not played live.
+
+** Validation
+The comparison that decides whether a Model matches its Netlist.
+
+- Setting :: A named assignment of values to every Control, at which validation runs.
+  /Avoid/: preset, configuration, knob position
+- Pack :: The fixed set of test signals played through both the Netlist and the Model.
+- Section :: One test signal in the Pack. Each Section starts from the Circuit's DC operating point.
+- Check :: One measured comparison between Netlist and Model output, with a Tolerance.
+  /Avoid/: test, metric
+- Tolerance :: The published limit of a Check. It is never loosened.
+  /Avoid/: threshold, limit
+- Full Validation :: A run of the complete Pack at every Setting of a Project.
+- Quick Validation :: A run of a shortened Pack, for iteration only. It proves nothing about a Project.
+- PASS :: Every Check within its Tolerance at one Setting. All-PASS: PASS at every Setting, in a Full Validation.
+- Installed :: A Plugin copied to the user's plugin folders. Only an all-PASS Project may be Installed.
+
+** Catalog
+The queue of circuits not yet built.
+
+- Candidate :: One circuit in the triage catalog, with its sources and rights notes.
+- Tier :: An editorial estimate of how buildable a Candidate is with the present Solver, T1 (now) to T4 (not practical).
+- Build Brief :: The stated reduced configuration of a T1 Candidate: what to transcribe, which Controls, which caveats.
+
+** Upstream
+- Upstream :: The =somewheresystems/analog-to-vst= repository: the skill and the template.
+- Upstream Patch :: A change to the template, kept in =upstream-patches/= until it is sent.
+  /Avoid/: fork change, local edit
+
+* Interfaces, Data Shapes, and State Transitions
+Not yet promoted. Candidate state variable: a Project's validation state (never run, Quick PASS, FAIL, aborted, all-PASS, Installed).
+
+* Invariants and Hard Constraints
+Carried from the previous session's rules; each has held so far but none is enforced by a check yet.
+
+- A Tolerance is never loosened. Fix the cause.
+- A Plugin is Installed only after all-PASS.
+- A Plugin's name contains no brand or model name. Its README credits the Circuit.
+- Component values come from sources. No schematic file is copied into a Project.
+- One validation runs at a time. Parallel runs make every cost measurement meaningless.
+
+* Fault Model
+Seen so far, with what the harness does today.
+
+| Boundary | Fault | Today |
+|---|---|---|
+| ngspice | Exits 0 but stops the transient early ("Timestep too small") | Harness raises "ngspice failed"; the run aborts. Seen with nine template op-amps in one Circuit; cured by rescaling the op-amp subcircuit |
+| ngspice | Falls back to a transient operating point, exit 0 | Raised on in green-overdrive's =spice.py= only |
+| Shell environment | =CARGO_TARGET_DIR= exported: scripts run another Project's binaries | Each Project's scripts force =$PWD/target= |
+| Cache | =validation/pack= reused across Quick and Full runs | Delete =validation/= before a Full Validation |
+| Machine load | Parallel validations distort cost numbers | Rule: one at a time |
+
+* UI Goals and Aesthetic Concept
+None yet. Plugins use the template's generic editor.
+
+* Verification Policy
+/These may be updated as time goes on./
+** Linting
+=cargo fmt= and =ruff= as the template configures them.
+** CI
+None. A Full Validation takes 5 to 10 minutes per Setting, so validation stays local.
+** Verification and Acceptance
+A Project is done when =validation/summary.md= from a Full Validation shows PASS for every Setting in =settings.txt=, =cargo test= and =uv run pytest -q= pass, and both bundles exist. Changes go through a pull request and a review loop with a reviewer from another model family.
+
+* Architectural Decision Record
+** ADR-0001 One repository holds every Project
+:PROPERTIES:
+:CUSTOM_ID: adr-0001
+:STATUS: accepted
+:END:
+Each Project is its own Cargo workspace with a full copy of the template, and all of them live in one repository. The alternative was one repository per Project, as the template scaffold assumes. One repository keeps the triage catalog, the Upstream Patches, and cross-Project findings in one history. The cost: a template fix must be applied to every Project's copy by hand until it lands upstream.
+
+* Live Work
+** DONE four-stage-fuzz: =tone_min= fails frequency response (0.124 dB, Tolerance 0.1)
+Frequency warping. The Circuit now runs at 672 kHz.
+** DONE seven-band-eq: ngspice stops early on Section s007
+The op-amp subcircuit is rescaled (same gain, same pole).
+** TODO seven-band-eq: settle the slider value and range
+** DONE Re-validate level 0 and volume 0 with section reset
+four-stage-fuzz and msk011-drive pass at 0 and now validate there. green-overdrive fails at level 0.
+** TODO green-overdrive: find why level 0 fails (harmonics 11.2 dB, burst null -30.5 dB)
+** TODO Benchmark the coupling-groups Solver against the present Solver, one Plugin at a time
+** TODO Next T1 builds: Mini Drive, London Drive, Tonemender, Kinks SIGN
+One pull request per Project. Build Briefs are in =triage/triage.md=.
+** TODO Decide which Upstream Patches to send
+Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =upstream-patches/NOTES.md=.
+** DONE Port the section-reset harness to msk011-drive
+
+* Open Questions
+- Who is this for: a personal shelf, or a public collection others install? Decides: Golem.
+- Is Offline-only an acceptable end state for a Plugin, or is real-time cost a goal? Decides: Golem.
+- Do Upstream Patches get sent to Somewhere Systems, and when? Decides: Golem.
+- Are binaries ever distributed? VST3 binaries built with nih-plug are GPLv3. Decides: Golem.
+- Why does green-overdrive fail at level 0 when the other two muted Settings pass? Decides: the build.
+
+* What We've Proven
+| Date | Result | Rerun |
+|---|---|---|
+| 2026-11-17 | msk011-drive with the section-reset harness: all-PASS, 4 Settings, including level 0 | =cd msk011-drive && rm -rf validation && ./validate.sh= |
+| 2026-11-17 | green-overdrive: all-PASS, 4 Settings (level at 0.05, not 0). References reused; Models rendered again | =cd green-overdrive && ./validate.sh= |
+| 2026-11-17 | green-overdrive at level 0: FAIL. Harmonics 11.23 dB (H3 of 100 Hz at -40 dBFS), burst null -30.54 dB | add =level-zero level=0= to a settings file; =SETTINGS=<file> ./validate.sh= |
+| 2026-11-17 | four-stage-fuzz at volume 0: PASS, with the same errors as volume 1. The muted Setting no longer needs 0.05 | part of the four-stage-fuzz run below |
+| 2026-11-17 | Cost at 48 kHz, stereo, one benchmark at a time (load average about 7 on 16 cores): seven-band-eq 25.9%, green-overdrive 31.6%, msk011-drive 224%, four-stage-fuzz 337% | =cargo run -q --release --example bench -p dsp 48000= with =CARGO_TARGET_DIR=$PWD/target= |
+| 2026-11-17 | four-stage-fuzz at 576 kHz: 6 of 7 PASS; =tone_min= FAIL on frequency response, 0.124 dB | superseded by the next row |
+| 2026-11-17 | four-stage-fuzz at 672 kHz: all-PASS, 7 Settings. Worst frequency response 0.090 dB (=tone_min=); predicted 0.091 from the square of the rate ratio | =cd four-stage-fuzz && rm -rf validation && ./validate.sh= |
+| 2026-11-17 | seven-band-eq with the template op-amp values: aborted, ngspice "Timestep too small" 8 ms into the 0 dBFS sweep | superseded by the next row |
+| 2026-11-17 | seven-band-eq with the rescaled op-amp: all-PASS, 5 Settings. Worst frequency response 0.090 dB (=inverse=) | =cd seven-band-eq && rm -rf validation && ./validate.sh= |
+| 2026-11-17 | Loosening ngspice =abstol= to 1e-12 alone does not cure the EQ abort (it stops at 16 ms) | one Section, by hand |
+| 2026-11-17 | Triage catalog is consistent: 104 unique IDs | =python3 triage/verify_triage.py= |

@@ -18,4 +18,4 @@ With one slider varied and all others centered, ngspice AC analysis relative to 
 
 ## Tests
 
-See `validation/summary.md` when the full validation run has completed; do not assume it passes until checked. The circuit is linear: no modeled harmonics or compression, but validation of linear frequency/phase accuracy is still necessary. CPU measured 81.7% of one core per stereo instance at 48 kHz (machine load may affect this). Use DAW plugin rescan after installation.
+A full validation passes at all 5 settings (2026-11-17; worst frequency response 0.090 dB). A later benchmark with nothing else validating measured 25.9% of one core. The circuit is linear: no modeled harmonics or compression, but validation of linear frequency/phase accuracy is still necessary. CPU measured 81.7% of one core per stereo instance at 48 kHz (machine load may affect this). Use DAW plugin rescan after installation.
