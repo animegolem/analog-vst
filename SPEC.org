@@ -97,6 +97,8 @@ Seen so far, with what the harness does today.
 | Shell environment | =CARGO_TARGET_DIR= exported: scripts run another Project's binaries | Each Project's scripts force =$PWD/target= |
 | Cache | =validation/pack= reused across Quick and Full runs | Delete =validation/= before a Full Validation |
 | Machine load | Parallel validations distort cost numbers | Rule: one at a time |
+| ngspice | A maximum step of a quarter of the oversampled period puts signal-dependent sidebands (about -84 dBc) in the reference of a linear Circuit | stack-boost's =spice.py= uses a sixteenth; the other Projects still use a quarter |
+| Harness | A Section is cut at its first sample, so ngspice takes its operating point with a nonzero input | stack-boost's =spice.py= starts each Section from silence; green-overdrive's is fixed in its own pull request; the others are not |
 
 * UI Goals and Aesthetic Concept
 None yet. Plugins use the template's generic editor.
@@ -131,6 +133,7 @@ four-stage-fuzz and msk011-drive pass at 0 and now validate there. green-overdri
 ** TODO Benchmark the coupling-groups Solver against the present Solver, one Plugin at a time
 ** TODO Next T1 builds: Mini Drive, London Drive, Tonemender, Kinks SIGN
 One pull request per Project. Build Briefs are in =triage/triage.md=.
+- DONE Tonemender: =stack-boost/= (Three-Band Stack Boost), all-PASS at 6 Settings, Installed
 ** TODO Decide which Upstream Patches to send
 Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =upstream-patches/NOTES.md=.
 ** DONE Port the section-reset harness to msk011-drive
@@ -162,3 +165,6 @@ Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =
 | 2026-11-17 | seven-band-eq fader: the kit seller's parts list names a 10 kΩ linear part (Alpha RA2045F-20R-15LC-B10K-C). The designer's files give no value | read the parts list linked in =seven-band-eq/README.md= |
 | 2026-11-17 | seven-band-eq per-band range in simulation: ±6.10 to ±6.83 dB with the other six centred; ceiling 7.96 dB from 2.7 kΩ against 1.8 kΩ. ±15 dB is not reachable with the published parts | =cd seven-band-eq && python3 measure_ac.py= |
 | 2026-11-17 | seven-band-eq after the header edit: all-PASS, 5 Settings. Worst frequency response 0.090 dB (=inverse=). Cost 25.7% (load average about 16) | =cd seven-band-eq && rm -rf validation && ./validate.sh= |
+| 2026-11-17 | stack-boost first Full Validation: FAIL on intermodulation at 2 of 6 Settings (1.40 dB and 6.10 dB). The Circuit is linear; the sidebands (about -84 dBc) were in the SPICE reference, with ngspice's maximum step at a quarter of the oversampled period. Tighter reltol and Gear did not remove them; a sixteenth step did (-122 dBc, equal to the Model). The mechanism is not established | superseded by the next row |
+| 2026-11-17 | stack-boost with the sixteenth-step reference: all-PASS, 6 Settings including the -97 dB corner. Worst frequency response 0.049 dB, burst null -73.3 dB. Cost 9.5% (load average about 16) | =cd stack-boost && rm -rf validation && ./validate.sh= |
+| 2026-11-17 | stack-boost headroom: an input bounded to 0.07 V peak (full scale) made of harmonics from 1 to 20 kHz drives the second op-amp to 9.47 V on a 9 V supply at =max_gain=. The hardware would clip there; the Model does not, and no Check covers it | ngspice, by hand; the deck is described in =stack-boost/README.md= |
