@@ -1,0 +1,8 @@
+# Independent control extremes; volume 0.05 replaces mute due to SPICE precision floor.
+default
+sustain_min sustain=0
+sustain_max sustain=1
+tone_min tone=0
+tone_max tone=1
+volume_min volume=0.05
+volume_max volume=1

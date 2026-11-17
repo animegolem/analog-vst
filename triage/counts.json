@@ -1,0 +1,57 @@
+{
+  "tiers": {
+    "T1": 9,
+    "T2": 22,
+    "T3": 54,
+    "T4": 19
+  },
+  "tags": {
+    "ota": [
+      "shruthi-smr4-mkii",
+      "shruthi-four-pole-mission",
+      "shruthi-polivoks",
+      "befaco-chopping-kinky",
+      "northcoast-msk007",
+      "northcoast-msk009",
+      "kassutronics-wavefolder",
+      "aion-aurora-ota-compressor"
+    ],
+    "vca": [
+      "winterbloom-neptune",
+      "mutable-ripples",
+      "mutable-blades",
+      "mutable-veils",
+      "mutable-shelves",
+      "shruthi-four-pole-mission",
+      "shruthi-dual-svf",
+      "gyraf-gssl"
+    ],
+    "jfet": [
+      "urei-1176ln",
+      "aion-helios-rat",
+      "runoffgroove-condor"
+    ],
+    "transformer": [
+      "urei-1176ln",
+      "gyraf-g9",
+      "gyraf-gpultec"
+    ],
+    "triode": [
+      "gyraf-g9",
+      "gyraf-gpultec"
+    ],
+    "rail": [
+      "mutable-blades",
+      "aion-helios-rat"
+    ],
+    "zener": [
+      "shruthi-dual-svf"
+    ],
+    "leakage": [
+      "aion-solaris-fuzz"
+    ],
+    "multi": [
+      "gyraf-gssl"
+    ]
+  }
+}

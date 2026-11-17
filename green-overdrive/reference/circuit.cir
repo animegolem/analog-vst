@@ -1,0 +1,76 @@
+* Green Diode Overdrive: fixed TS-808 effect-on signal path.
+* Independently transcribed component facts, not a copied schematic.
+* Sources: https://www.electrosmash.com/tube-screamer-analysis (all values below),
+* http://www.geofex.com/article_folders/tstech/tsxtech.htm (topology, output).
+* C1 20n R1 1k R2 510k R3 10k; C2 1u R5 10k; R4 4.7k C3 47n;
+* R6 51k DRIVE 500k audio C4 51p D1/D2 1N914; tone R7 1k C5 220n,
+* R9 10k TONE 20k linear R8 220 C6 220n RF 1k; C7 1u R12 1k
+* LEVEL 100k audio; C8 100n R13 510k R14 10k RB 100 C9 10u RC 10k;
+* supply divider 10k/10k, 47u; 9V ideal source, supply 100u.
+* The ElectroSmash text calls tone a G/W taper, approximated linear; Level audio
+* agrees with its text (its parts-list also inconsistently calls it linear).
+* Q1/Q3: 2SC1815 reduced DC Gummel-Poon model, published parameters IS 40f,
+* BF 170 BR 3.6 VAF 100 IKF .25 RB 50 RC .76 from
+* http://mag.eee.u-ryukyu.ac.jp/pc/spice/node7.html. RE=0.001 assumed; SPICE
+* and DSP omit junction charge and transit times; NF=NR=1 and no leakage.
+* 1N914 assumed equivalent to the template 1N4148 model; no reverse breakdown.
+* 4558 halves single-pole ideal input/output, 100dB gain, 3MHz GBW, no rails
+* or slew limit. 9V ideal, 1M load, ideal voltage input, 0dBFS=0.2V peak.
+* JFET electronic bypass and its switching components omitted, effect-on only.
+* Capacitor ESR, noise, thermal drift and supply protection diode omitted.
+* On 0.2V-peak sine inputs at 20,100,1000,5000,20000Hz, max drive and tone
+* 0,0.5,1, ngspice reported op-amp outputs within 3.83-5.14V (9V supply).
+* This is a spot check, not a proof for arbitrary input transients.
+* Validation establishes agreement to this simplified SPICE circuit, not hardware.
+.subckt opamp inp inn out
+G1 0 p inp inn 100
+Rp p 0 1k
+Cp p 0 5.30516476973u
+E1 out 0 p 0 1
+.ends
+.model DCLIP D(Is=2.52n Rs=0.568 N=1.752 Cjo=4p M=0.4 tt=20n)
+.model Q1815 NPN(IS=40f BF=170 BR=3.6 VAF=100 IKF=0.25 RB=50 RC=0.76 RE=0.001)
+VCC vcc 0 DC 9
+R32 vcc vref 10k
+R33 vref 0 10k
+C16 vref 0 47u
+C17 vcc 0 100u
+$SOURCE
+R1 in i1 1k
+C1 i1 ib 20n
+R2 ib vref 510k
+Q1 vcc ib ie Q1815
+R3 ie 0 10k
+C2 ie ap 1u
+R5 ap vref 10k
+XU1 ap am ao opamp
+R4 am g 4.7k
+C3 g 0 47n
+R6 am dr 51k
+RDRIVE dr ao {max($DRIVE,1)}
+D1 am ao DCLIP
+D2 ao am DCLIP
+C4 am ao 51p
+R7 ao tp 1k
+C5 tp 0 220n
+R9 tp vref 10k
+XU2 tp tm to opamp
+RF to tm 1k
+RTONE1 tp tw {max(20k * $TONE,1)}
+RTONE2 tw tm {max(20k * (1-$TONE),1)}
+R8 tw tc 220
+C6 tc 0 220n
+C7 to lv1 1u
+R12 lv1 lvtop 1k
+RLEVEL1 lvtop lv {max(100k * (1-$LEVEL),1)}
+RLEVEL2 lv 0 {max(100k * $LEVEL,1)}
+C8 lv ob 100n
+R13 ob vref 510k
+Q3 vcc ob oe Q1815
+R14 oe 0 10k
+RB oe oc 100
+C9 oc out 10u
+RC out 0 10k
+RLOAD out 0 1meg
+$ANALYSIS
+.end

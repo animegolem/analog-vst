@@ -1,0 +1,184 @@
+From 1753cb36fee86a73830c52f3754da673688cd672 Mon Sep 17 00:00:00 2001
+From: golem <78136824+animegolem@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 01:54:12 -0600
+Subject: [PATCH] Render validation sections from fresh DC state
+
+---
+ template/harness/src/analog_harness/cli.py   | 35 ++++++++++-
+ template/harness/src/analog_harness/spice.py |  4 +-
+ template/harness/tests/test_harness.py       | 66 ++++++++++++++++++++
+ template/validate.sh                         |  2 +-
+ 4 files changed, 103 insertions(+), 4 deletions(-)
+
+diff --git a/template/harness/src/analog_harness/cli.py b/template/harness/src/analog_harness/cli.py
+index c4e3bc1..00bafc1 100644
+--- a/template/harness/src/analog_harness/cli.py
++++ b/template/harness/src/analog_harness/cli.py
+@@ -2,6 +2,7 @@ import argparse
+ import json
+ import subprocess
+ import sys
++import tempfile
+ from pathlib import Path
+ 
+ import numpy as np
+@@ -31,6 +32,30 @@ def plain_controls(controls: list[str]) -> dict[str, str]:
+     return dict(line.split("=", 1) for line in plain.split())
+ 
+ 
++def render_sections(stimulus: np.ndarray, manifest: dict, controls: list[str], executable: Path) -> np.ndarray:
++    """Render each SPICE section and its trailing gap using a fresh processor.
++
++    This resets the model's resampling filters too. SPICE instead filters the full pack before
++    slicing and after stitching, so the results can differ near section boundaries. The generated
++    pack's silent gaps keep prior input out of the section start; nonstandard packs need care.
++    """
++    fs = manifest["sample_rate"]
++    out = np.zeros_like(stimulus)
++    with tempfile.TemporaryDirectory() as tmp:
++        src, dst = Path(tmp) / "in.wav", Path(tmp) / "out.wav"
++        for i, sec in enumerate(manifest["sections"], 1):
++            a = sec["start"]
++            b = min(a + sec["length"] + int(0.5 * fs), len(stimulus))
++            sf.write(src, stimulus[a:b], fs, subtype="FLOAT")
++            subprocess.run([str(executable), str(src), str(dst), *controls], check=True)
++            y, rate = sf.read(dst, dtype="float64")
++            if rate != fs or y.ndim != 1 or len(y) != b - a:
++                raise ValueError("model section capture has unexpected shape or sample rate")
++            out[a:b] = y
++            print(f"  model section {i}/{len(manifest['sections'])} done", file=sys.stderr, flush=True)
++    return out
++
++
+ def main():
+     p = argparse.ArgumentParser(prog="harness")
+     sub = p.add_subparsers(dest="cmd", required=True)
+@@ -57,6 +82,11 @@ def main():
+     r.add_argument("controls", nargs="*", help="control=knob position (0..1); fills the netlist placeholders")
+     r.add_argument("-o", "--out", type=Path, required=True)
+ 
++    model = sub.add_parser("model-sections", help="render each section from the model's DC state")
++    model.add_argument("pack", type=Path, help="pack.json")
++    model.add_argument("controls", nargs="*", help="control=knob position (0..1)")
++    model.add_argument("-o", "--out", type=Path, required=True)
++
+     o = sub.add_parser("op", help="print the netlist's DC operating point (node voltages)")
+     o.add_argument("netlist", type=Path)
+     o.add_argument("controls", nargs="*", help="control=knob position (0..1)")
+@@ -73,7 +103,10 @@ def main():
+ 
+     stimulus, manifest = signals.load(args.pack)
+     fs = manifest["sample_rate"]
+-    if args.cmd == "spice":
++    if args.cmd == "model-sections":
++        y = render_sections(stimulus, manifest, args.controls, REPO / "target/release/render")
++        sf.write(args.out, y.astype(np.float32), fs, subtype="FLOAT")
++    elif args.cmd == "spice":
+         params = plain_controls(args.controls)
+         scale = float(params.pop("_VOLTS_PER_FULL_SCALE", 1.0))
+         print(" ".join(f"{k}={v}" for k, v in params.items()))
+diff --git a/template/harness/src/analog_harness/spice.py b/template/harness/src/analog_harness/spice.py
+index 00afe22..fc541c5 100644
+--- a/template/harness/src/analog_harness/spice.py
++++ b/template/harness/src/analog_harness/spice.py
+@@ -1,8 +1,8 @@
+ """Renders the test-signal pack through a SPICE netlist with ngspice, producing a reference capture.
+ 
+ The pack is upsampled 4x, split into sections (each with its trailing gap) that run in parallel from
+-the circuit's DC operating point, then stitched and decimated. Sections are separated by silence
+-longer than the circuit's settling time, so this matches one continuous run.
++the circuit's DC operating point, then stitched and decimated. Each section starts from DC, not the
++state left by the preceding section; a continuous run may differ for slowly settling circuits.
+ """
+ 
+ import multiprocessing
+diff --git a/template/harness/tests/test_harness.py b/template/harness/tests/test_harness.py
+index 78cce63..aa0822c 100644
+--- a/template/harness/tests/test_harness.py
++++ b/template/harness/tests/test_harness.py
+@@ -114,3 +114,69 @@ def test_spice_reference_matches_analytic_rc(tmp_path):
+     f = np.array(fr["freqs"])
+     expected = -10 * np.log10(1 + (2 * np.pi * f * 1000 * 10e-9) ** 2)
+     assert np.max(np.abs(np.array(fr["db"]) - expected)) < 0.01
++
++
++def test_model_sections_restart_with_trailing_gap(tmp_path):
++    """A long-lived accumulator must not carry its previous charge into the next section."""
++    from analog_harness import cli
++
++    renderer = tmp_path / "render"
++    renderer.write_text(
++        "#!/usr/bin/env python3\nimport sys\nimport numpy as np\nimport soundfile as sf\n"
++        "x, fs = sf.read(sys.argv[1])\n"
++        "sf.write(sys.argv[2], np.cumsum(x), fs, subtype='FLOAT')\n"
++    )
++    renderer.chmod(0o755)
++    x = np.array([0, 1, 1, 0, 0, 2, 2, 0, 0], dtype=float)
++    manifest = {"sample_rate": 4, "sections": [{"start": 1, "length": 2}, {"start": 5, "length": 2}]}
++    y = cli.render_sections(x, manifest, [], renderer)
++    np.testing.assert_array_equal(y, [0, 1, 2, 2, 2, 2, 4, 4, 4])
++
++
++def test_overlapping_section_spans_are_overwritten_in_manifest_order(tmp_path):
++    from analog_harness import cli
++
++    renderer = tmp_path / "render"
++    renderer.write_text(
++        "#!/usr/bin/env python3\nimport sys\nimport numpy as np\nimport soundfile as sf\n"
++        "x, fs = sf.read(sys.argv[1])\n"
++        "sf.write(sys.argv[2], np.cumsum(x), fs, subtype='FLOAT')\n"
++    )
++    renderer.chmod(0o755)
++    x = np.ones(7)
++    manifest = {"sample_rate": 4, "sections": [{"start": 0, "length": 3}, {"start": 3, "length": 2}]}
++    np.testing.assert_array_equal(cli.render_sections(x, manifest, [], renderer), [1, 2, 3, 1, 2, 3, 4])
++
++
++def test_real_model_section_equals_isolated_render(tmp_path):
++    import os
++    import subprocess
++
++    import soundfile as sf
++
++    from analog_harness import cli
++
++    repo = cli.REPO
++    env = {**os.environ, "CARGO_TARGET_DIR": str(repo / "target")}
++    subprocess.run(["cargo", "build", "--quiet", "--release", "-p", "render"], cwd=repo, env=env, check=True)
++    executable = repo / "target/release/render"
++    fs = 48_000
++    first = np.full(fs // 5, 0.8, dtype=np.float32)
++    gap = np.zeros(fs // 2, dtype=np.float32)
++    second = signals.tone(fs, 1000, 0.1, -30).astype(np.float32)
++    x = np.concatenate([first, gap, second, gap])
++    start = len(first) + len(gap)
++    manifest = {
++        "sample_rate": fs,
++        "sections": [{"start": 0, "length": len(first)}, {"start": start, "length": len(second)}],
++    }
++    y = cli.render_sections(x, manifest, [], executable)
++    src, dst = tmp_path / "in.wav", tmp_path / "out.wav"
++    sf.write(src, x[start:], fs, subtype="FLOAT")
++    subprocess.run([str(executable), str(src), str(dst)], check=True)
++    isolated, _ = sf.read(dst)
++    np.testing.assert_array_equal(y[start:], isolated)
++    sf.write(src, x, fs, subtype="FLOAT")
++    subprocess.run([str(executable), str(src), str(dst)], check=True)
++    continuous, _ = sf.read(dst)
++    assert np.max(np.abs(continuous[start:] - isolated)) > 1e-8
+diff --git a/template/validate.sh b/template/validate.sh
+index 4c9cd94..212a5c8 100755
+--- a/template/validate.sh
++++ b/template/validate.sh
+@@ -40,7 +40,7 @@ while read -r -u 3 name controls; do
+   fi
+   echo "== $name: rendering the model and comparing"
+   # shellcheck disable=SC2086
+-  ./target/release/render validation/pack/pack.wav "$dir/model.wav" $controls
++  (cd harness && uv run --quiet harness model-sections ../validation/pack/pack.json $controls -o "../$dir/model.wav")
+   if (cd harness && uv run --quiet harness compare ../validation/pack/pack.json "../$dir/reference.wav" "../$dir/model.wav" -o "../$dir"); then
+     summary+=$'\n'"| $name | PASS |"
+   else
+-- 
+2.54.0 (Apple Git-157)
+

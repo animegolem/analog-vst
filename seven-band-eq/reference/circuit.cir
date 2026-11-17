@@ -1,0 +1,79 @@
+* Seven-band graphic EQ: Rev 1 from Tom Whitwell / Music Thing Modular.
+* Source: https://musicthing.co.uk/collateral/graphic_schematic.pdf
+* BOM: https://github.com/TomWhitwell/Graphic (Rev 1 workbook).
+* Faders are unspecified in schematic/BOM: ASSUME 10k linear, unverified.
+* NE5532 approximated single-pole A0=100000 GBW=10MHz; no clipping/slew/noise.
+* Ideal source; 1Meg external load; LEDs and supply decoupling omitted.
+* 0dBFS = 0.5V peak pending rail check.
+.subckt opamp inp inn out
+G1 0 p inp inn 100
+Rp p 0 1k
+Cp p 0 1.591549430919u
+E1 out 0 p 0 1
+.ends
+$SOURCE
+R25 in im 10k
+R26 im io 10k
+XIN 0 im io opamp
+R1 io plus 2.7k
+XOUT plus minus eo opamp
+R2 minus eo 2.7k
+R3 eo out 470
+RL out 0 1meg
+RP0T minus w0 {max(10000*(1-$B63),1)}
+RP0B w0 plus {max(10000*$B63,1)}
+C0_0 w0 a0 4.7e-07
+C0_1 w0 a0 4.7e-07
+C0_2 w0 a0 3.3e-07
+CS0 a0 b0 2.2e-08
+RG0 b0 0 130000.0
+XF0 b0 o0 o0 opamp
+RF0 a0 o0 1800
+RP1T minus w1 {max(10000*(1-$B160),1)}
+RP1B w1 plus {max(10000*$B160,1)}
+C1_0 w1 a1 4.7e-07
+C1_1 w1 a1 3.3e-08
+CS1 a1 b1 1e-08
+RG1 b1 0 110000.0
+XF1 b1 o1 o1 opamp
+RF1 a1 o1 1800
+RP2T minus w2 {max(10000*(1-$B410),1)}
+RP2B w2 plus {max(10000*$B410,1)}
+C2_0 w2 a2 1e-07
+C2_1 w2 a2 1e-07
+CS2 a2 b2 4.7e-09
+RG2 b2 0 91000.0
+XF2 b2 o2 o2 opamp
+RF2 a2 o2 1800
+RP3T minus w3 {max(10000*(1-$B1K),1)}
+RP3B w3 plus {max(10000*$B1K,1)}
+C3_0 w3 a3 4.7e-08
+C3_1 w3 a3 3.3e-08
+CS3 a3 b3 2.2e-09
+RG3 b3 0 82000.0
+XF3 b3 o3 o3 opamp
+RF3 a3 o3 1800
+RP4T minus w4 {max(10000*(1-$B2K5),1)}
+RP4B w4 plus {max(10000*$B2K5,1)}
+C4_0 w4 a4 3.3e-08
+CS4 a4 b4 1e-09
+RG4 b4 0 68000.0
+XF4 b4 o4 o4 opamp
+RF4 a4 o4 1800
+RP5T minus w5 {max(10000*(1-$B7K7),1)}
+RP5B w5 plus {max(10000*$B7K7,1)}
+C5_0 w5 a5 1e-08
+C5_1 w5 a5 2.2e-09
+CS5 a5 b5 4.7e-10
+RG5 b5 0 62000.0
+XF5 b5 o5 o5 opamp
+RF5 a5 o5 1800
+RP6T minus w6 {max(10000*(1-$B16K),1)}
+RP6B w6 plus {max(10000*$B16K,1)}
+C6_0 w6 a6 4.7e-09
+CS6 a6 b6 2.2e-10
+RG6 b6 0 51000.0
+XF6 b6 o6 o6 opamp
+RF6 a6 o6 1800
+$ANALYSIS
+.end

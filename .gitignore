@@ -1,0 +1,12 @@
+target/
+validation/
+*.wav
+*.validate.log
+.DS_Store
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+# separate clone of somewheresystems/analog-to-vst; its branches are exported to upstream-patches/
+/upstream-work/
+*.local.md

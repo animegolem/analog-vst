@@ -1,0 +1,6 @@
+# Every control at both extremes; output at unity for drive/tone corner tests.
+default
+min-drive-tone drive=0 tone=0 level=1
+max-drive-tone drive=1 tone=1 level=1
+# level=0 leaves ~1 ohm to ground (~-100 dB): below the SPICE reference precision, so 0.05 is used.
+level-low level=0.05

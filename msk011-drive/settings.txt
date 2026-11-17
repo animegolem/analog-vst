@@ -1,0 +1,4 @@
+# rotation positions; 0.05 replaces mute (0), whose reference is below the noise floor.
+default
+low level=0.05
+high level=1

@@ -1,0 +1,53 @@
+* Class A Transistor Drive: one-input reduced MSK 011 circuit.
+* Matthew Skala / North Coast Synthesis, GPLv3: https://files.northcoastsynthesis.com/msk-011.pdf
+* Schematic p22, description pp18-20, calibration p15, audio pots p7.
+* Channel 2 selected: no DC normal, suited to audio. Others unpatched and off.
+* +/-12V ideal rails, 1k source, 100k load, 5V = 0dBFS peak.
+* Fairchild/onsemi 2N5088 https://www.onsemi.com/pdf/datasheet/2n5088-d.pdf
+* Only IS BF BR VAF IKF RB RC RE retained; RE is published-model default 0.
+* CJE/CJC/TF/TR charge storage and ISE/NE/ISC/NC leakage omitted in BOTH models.
+* See README for fidelity limitations and calibrated trim.
+.model Q5088 NPN(IS=5.911f BF=1122 BR=1.271 VAF=62.37 IKF=14.92m RB=10 RC=1.61 RE=0)
+VCC vp 0 DC 12
+VEE vn 0 DC -12
+$SOURCE
+RS in jack2 1k
+R1N vp jack1 100k
+R1T jack1 b1 99999
+R1B b1 0 1
+R2T jack2 b2 {max(100k * (1 - $LEVEL), 1)}
+R2B b2 0 {max(100k * $LEVEL, 1)}
+R3T b3 0 99999
+R3B b3 0 1
+R4N vn jack4 100k
+R4T jack4 b4 99999
+R4B b4 0 1
+Q1 vp b1 e1 Q5088
+Q2 vp b2 e2 Q5088
+Q3 vp b3 e3 Q5088
+Q4 vp b4 e4 Q5088
+RE1 e1 vn 22k
+RE2 e2 vn 22k
+RE3 e3 vn 22k
+RE4 e4 vn 22k
+RM1 e1 sum 47k
+RM2 e2 sum 47k
+RM3 e3 sum 47k
+RM4 e4 sum 47k
+RTOP vp trim 35009.67484
+RBOT trim vn 64990.32516
+R16 trim sum 330k
+R17 sum vn 2.7k
+Q5 c5 sum e5 Q5088
+R18 vp c5 5.9k
+R19 e5 vn 510
+R20 c5 b6 22k
+R21 b6 vn 12k
+Q6 dc b6 e6 Q5088
+R22 vp dc 4.7k
+R23 e6 vn 510
+C1 dc out 4.7u
+R24 out 0 330k
+RLOAD out 0 100k
+$ANALYSIS
+.end

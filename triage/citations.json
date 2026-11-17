@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": 1,
+      "url": "https://aionfx.com/app/files/docs/stratus_documentation.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 2,
+      "url": "https://aionfx.com/app/files/docs/halo_documentation.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 3,
+      "url": "https://files.northcoastsynthesis.com/msk-011.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 4,
+      "url": "https://www.musicthing.co.uk/collateral/mini_drive_Rev1_Schematic.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 5,
+      "url": "https://www.musicthing.co.uk/collateral/london_drive_Rev1_Schematic.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 6,
+      "url": "https://musicthing.co.uk/collateral/graphic_schematic.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 7,
+      "url": "https://runoffgroove.com/tonemender.html",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 8,
+      "url": "https://pichenettes.github.io/mutable-instruments-documentation/modules/kinks/downloads/kinks_v41.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 9,
+      "url": "https://bgr360.github.io/assets/pdf/mutable_instruments/ears_v40.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 10,
+      "url": "https://aionfx.com/app/files/docs/solaris_documentation.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 11,
+      "url": "https://aionfx.com/app/files/docs/helios_documentation.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 12,
+      "url": "https://runoffgroove.com/condor.html",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 13,
+      "url": "https://github.com/somewheresystems/analog-to-vst/issues?q=is%3Aissue",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 14,
+      "url": "https://github.com/somewheresystems/analog-to-vst/pulls?q=is%3Apr",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 15,
+      "url": "https://github.com/somewheresystems/analog-to-vst/tree/f5a9d8dafdb2691dc8a07fc685e1991b796f3c19",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 16,
+      "url": "https://befaco.org/docs/Chopping_Kinky/Chopping_Kinky_V1_Schematic.pdf",
+      "title": "",
+      "accessed": "2026-11-16"
+    },
+    {
+      "id": 17,
+      "url": "https://github.com/asb2m10/dexed",
+      "title": "",
+      "accessed": "2026-11-16"
+    }
+  ]
+}

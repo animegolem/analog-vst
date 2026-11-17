@@ -1,0 +1,40 @@
+From cee56c76532fab93e022b7dc7f87434cfa7a5fc6 Mon Sep 17 00:00:00 2001
+From: golem <78136824+animegolem@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 00:36:00 -0600
+Subject: [PATCH 1/2] Keep template script build artifacts in the project
+ target directory
+
+---
+ template/install.sh  | 2 ++
+ template/validate.sh | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/template/install.sh b/template/install.sh
+index e2ae79c..1b458aa 100755
+--- a/template/install.sh
++++ b/template/install.sh
+@@ -2,6 +2,8 @@
+ # Builds the plugin and installs it where DAWs look for plugins (macOS user folders).
+ set -euo pipefail
+ cd "$(dirname "$0")"
++# The bundle paths below are relative to this project, not the caller's Cargo target directory.
++export CARGO_TARGET_DIR="$PWD/target"
+ cargo xtask bundle plugin --release
+ name=$(sed -n 's/^name = "\(.*\)"/\1/p' bundler.toml)
+ vst3="$HOME/Library/Audio/Plug-Ins/VST3"
+diff --git a/template/validate.sh b/template/validate.sh
+index 4c9cd94..b7f813c 100755
+--- a/template/validate.sh
++++ b/template/validate.sh
+@@ -6,6 +6,8 @@
+ # Exits non-zero if any check fails. SPICE references are reused while the netlist is unchanged.
+ set -euo pipefail
+ cd "$(dirname "$0")"
++# The scripts and harness use ./target directly, regardless of the caller's Cargo configuration.
++export CARGO_TARGET_DIR="$PWD/target"
+ 
+ for tool in cargo uv ngspice; do
+   command -v "$tool" >/dev/null || { echo "missing $tool: see GUIDE.md, step 1" >&2; exit 2; }
+-- 
+2.54.0 (Apple Git-157)
+

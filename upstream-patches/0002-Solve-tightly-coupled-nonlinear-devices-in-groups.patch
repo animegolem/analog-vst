@@ -1,0 +1,315 @@
+From abe258811b3e53766f52adf606724732702e316c Mon Sep 17 00:00:00 2001
+From: golem <78136824+animegolem@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 00:52:20 -0600
+Subject: [PATCH 2/2] Solve tightly coupled nonlinear devices in groups
+
+---
+ template/dsp/src/circuit.rs | 220 +++++++++++++++++++++++++-----------
+ 1 file changed, 156 insertions(+), 64 deletions(-)
+
+diff --git a/template/dsp/src/circuit.rs b/template/dsp/src/circuit.rs
+index defe4f0..75638cb 100644
+--- a/template/dsp/src/circuit.rs
++++ b/template/dsp/src/circuit.rs
+@@ -215,8 +215,10 @@ pub struct Circuit {
+     sequential: bool,
+     /// True when devices only depend on earlier ones, so later currents start each sample at zero.
+     zero_currents: bool,
+-    /// True when devices load each other strongly enough to need one joint Newton solve.
+-    joint: bool,
++    /// Device ranges in dependency order. Multi-device ranges are solved jointly.
++    groups: Vec<std::ops::Range<usize>>,
++    /// Port indices for each joint solve, preallocated outside the audio thread.
++    group_ports: Vec<Vec<usize>>,
+     jac: Mat,
+     input_row: usize,
+     // Workspace for `update`.
+@@ -316,7 +318,8 @@ impl Circuit {
+             dirty: true,
+             sequential: true,
+             zero_currents: true,
+-            joint: false,
++            groups: Vec::new(),
++            group_ports: Vec::new(),
+             jac: Mat::new(nn, nn + 1),
+             input_row: 0,
+             s: Mat::new(size, size),
+@@ -487,38 +490,62 @@ impl Circuit {
+                 })
+                 .fold(0.0, f64::max)
+         };
+-        let mut order: Vec<usize> = Vec::with_capacity(nd);
+-        let mut placed = vec![false; nd];
+-        while order.len() < nd {
+-            // Next: the unplaced device least driven by other unplaced devices.
+-            let next = (0..nd)
+-                .filter(|&a| !placed[a])
+-                .min_by(|&a, &b| {
+-                    let drive = |x: usize| {
+-                        (0..nd)
+-                            .filter(|&y| y != x && !placed[y])
+-                            .map(|y| coupling(x, y, &self.devices, &self.port_v))
+-                            .fold(0.0, f64::max)
+-                    };
+-                    drive(a).total_cmp(&drive(b))
+-                })
++        // Connected components of the strong mutual-coupling graph become joint blocks.
++        let mut root: Vec<usize> = (0..nd).collect();
++        for a in 0..nd {
++            for b in a + 1..nd {
++                if coupling(a, b, &self.devices, &self.port_v) * coupling(b, a, &self.devices, &self.port_v) >= 0.1 {
++                    let (ra, rb) = (root[a], root[b]);
++                    for r in &mut root {
++                        if *r == rb {
++                            *r = ra;
++                        }
++                    }
++                }
++            }
++        }
++        let mut blocks: Vec<Vec<usize>> = Vec::new();
++        for d in 0..nd {
++            if let Some(block) = blocks.iter_mut().find(|block| root[block[0]] == root[d]) {
++                block.push(d);
++            } else {
++                blocks.push(vec![d]);
++            }
++        }
++        // Pick the block least driven by unplaced blocks, upstream first.
++        let mut ordered = Vec::with_capacity(nd);
++        let mut groups = Vec::new();
++        while !blocks.is_empty() {
++            let drive = |i: usize| -> f64 {
++                blocks[i]
++                    .iter()
++                    .flat_map(|&a| {
++                        blocks
++                            .iter()
++                            .enumerate()
++                            .filter(move |(j, _)| *j != i)
++                            .flat_map(move |(_, block)| block.iter().map(move |&b| (a, b)))
++                    })
++                    .map(|(a, b)| coupling(a, b, &self.devices, &self.port_v))
++                    .fold(0.0, f64::max)
++            };
++            let next = (0..blocks.len())
++                .min_by(|&a, &b| drive(a).total_cmp(&drive(b)))
+                 .unwrap();
+-            placed[next] = true;
+-            order.push(next);
++            let start = ordered.len();
++            ordered.extend(blocks.remove(next));
++            groups.push(start..ordered.len());
+         }
+-        // One sweep suffices when devices only depend on earlier ones, or when every reverse
+-        // coupling's loop gain (a Gauss-Seidel sweep's convergence factor) is tiny.
+-        let order_ref = &order;
+-        let pairs = || (0..nd).flat_map(move |i| (i + 1..nd).map(move |j| (order_ref[i], order_ref[j])));
+-        let exact = pairs().all(|(a, b)| coupling(a, b, &self.devices, &self.port_v) < 1e-12);
+-        let loop_gain = pairs()
+-            .map(|(a, b)| coupling(a, b, &self.devices, &self.port_v) * coupling(b, a, &self.devices, &self.port_v))
+-            .fold(0.0, f64::max);
+-        self.zero_currents = exact;
+-        self.sequential = exact || loop_gain < 1e-3;
+-        // Strong mutual feedback (e.g. two-transistor fuzz circuits): solve all ports jointly.
+-        self.joint = !exact && loop_gain >= 0.1;
+-        self.devices = order.iter().map(|&i| self.devices[i]).collect();
++        self.devices = ordered.iter().map(|&i| self.devices[i]).collect();
++        self.groups = groups;
++        self.group_ports = self
++            .groups
++            .iter()
++            .map(|group| group.clone().flat_map(|d| span(&self.devices[d])).collect())
++            .collect();
++        // Recheck reverse coupling on every sweep: pots can change the matrix after construction.
++        self.sequential = self.groups.len() <= 1;
++        self.zero_currents = false;
+     }
+ 
+     /// SPICE-style DC operating point: Newton on the full nodal equations with capacitors open,
+@@ -637,18 +664,26 @@ impl Circuit {
+             };
+             self.i_prev[k] = i;
+         }
+-        if self.joint {
+-            self.solve_joint();
+-        } else {
+-            for _ in 0..32 {
+-                self.i_used.copy_from_slice(&self.z[base..]);
+-                for d in 0..self.devices.len() {
+-                    self.solve_device(d);
+-                }
+-                if self.sequential || self.sweep_error() < 1e-7 {
+-                    break;
++        for _ in 0..32 {
++            self.i_used.copy_from_slice(&self.z[base..]);
++            for g in 0..self.groups.len() {
++                if self.groups[g].len() == 1 {
++                    self.solve_device(self.groups[g].start);
++                } else {
++                    self.solve_joint(g);
+                 }
+             }
++            // Scale against AC port movement rather than the much larger DC bias. The floor covers
++            // floating-point cancellation at rest; the relative term limits the sweep mismatch.
++            let movement = self
++                .v
++                .iter()
++                .zip(&self.v_prev)
++                .map(|(v, old)| (v - old).abs())
++                .fold(0.0, f64::max);
++            if self.sequential || self.sweep_error() < 1e-12 + 1e-8 * movement {
++                break;
++            }
+         }
+         // Pass 2: add the device currents' contribution to the capacitor voltages and output.
+         for (col, &zc) in self.lin.chunks_exact(rows).skip(base).zip(&self.z[base..]) {
+@@ -662,60 +697,64 @@ impl Circuit {
+         self.acc[nx]
+     }
+ 
+-    /// Newton over all ports at once: v = p + K f(v), with p the linear part of each port voltage.
+-    fn solve_joint(&mut self) {
++    /// Newton over one coupled block; currents outside it are held at their latest values.
++    fn solve_joint(&mut self, group: usize) {
+         let nx = self.caps.len();
+-        let (base, nn) = (nx + 2, self.ports.len());
++        let base = nx + 2;
++        let ports = &self.group_ports[group];
++        let nn = ports.len();
+         let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
+         for _ in 0..64 {
+             self.jac.data.fill(0.0);
+-            for &(dev, first) in &self.devices {
++            for d in self.groups[group].clone() {
++                let (dev, first) = self.devices[d];
+                 let np = dev.ports();
+                 dev.eval(&self.v[first..first + np], &mut i, &mut j);
+                 self.z[base + first..base + first + np].copy_from_slice(&i[..np]);
+-                // J = I - K Jf: column (first + b) gets -sum_a K[:, first + a] Jf[a][b].
+-                for r in 0..nn {
++                for (r, &port) in ports.iter().enumerate() {
+                     for b in 0..np {
++                        let col = ports.iter().position(|&p| p == first + b).unwrap();
+                         let kj: f64 = (0..np)
+-                            .map(|a| self.port_v.at(r, base + first + a) * j[a * np + b])
++                            .map(|a| self.port_v.at(port, base + first + a) * j[a * np + b])
+                             .sum();
+-                        *self.jac.at_mut(r, first + b) -= kj;
++                        *self.jac.at_mut(r, col) -= kj;
+                     }
+                 }
+             }
+-            for r in 0..nn {
++            for (r, &port) in ports.iter().enumerate() {
+                 *self.jac.at_mut(r, r) += 1.0;
+-                let ki = dot(&self.port_v.row(r)[base..], &self.z[base..]);
+-                *self.jac.at_mut(r, nn) = self.v[r] - self.acc[nx + 1 + r] - ki;
++                let ki = dot(&self.port_v.row(port)[base..], &self.z[base..]);
++                *self.jac.at_mut(r, nn) = self.v[port] - self.acc[nx + 1 + port] - ki;
+             }
+             solve_small(&mut self.jac, nn);
+             let big = (0..nn).fold(0.0f64, |m, k| m.max(self.jac.at(k, nn).abs()));
+             let scale = if big > 0.1 { 0.1 / big } else { 1.0 };
+-            for k in 0..nn {
+-                self.v[k] -= self.jac.at(k, nn) * scale;
++            for (k, &port) in ports.iter().enumerate() {
++                self.v[port] -= self.jac.at(k, nn) * scale;
+             }
+             if big * scale < 1e-9 {
+                 break;
+             }
+         }
+-        for &(dev, first) in &self.devices {
++        for d in self.groups[group].clone() {
++            let (dev, first) = self.devices[d];
+             let np = dev.ports();
+             dev.eval(&self.v[first..first + np], &mut i, &mut j);
+             self.z[base + first..base + first + np].copy_from_slice(&i[..np]);
+         }
+     }
+ 
+-    /// Bound on how far earlier devices' port voltages are from consistent with the currents that
+-    /// later devices settled on during the last sweep (in volts).
++    /// Bound on the voltage inconsistency caused by later blocks' changed currents.
+     fn sweep_error(&self) -> f64 {
+         let base = self.caps.len() + 2;
+         let mut worst = 0.0f64;
+-        for (d, &(dev, first)) in self.devices.iter().enumerate() {
+-            let later = self.devices.get(d + 1).map_or(self.ports.len(), |x| x.1);
+-            for r in first..first + dev.ports() {
++        for (g, ports) in self.group_ports.iter().enumerate() {
++            for &r in ports {
+                 let row = &self.port_v.row(r)[base..];
+-                let err: f64 = (later..self.ports.len())
+-                    .map(|c| (row[c] * (self.z[base + c] - self.i_used[c])).abs())
++                let err: f64 = self.group_ports[g + 1..]
++                    .iter()
++                    .flatten()
++                    .map(|&c| (row[c] * (self.z[base + c] - self.i_used[c])).abs())
+                     .sum();
+                 worst = worst.max(err);
+             }
+@@ -1008,6 +1047,59 @@ mod tests {
+         assert!((gain(&mut c, 1000.0, 0.01) - 100.0).abs() / 100.0 < 3e-3);
+     }
+ 
++    #[test]
++    fn antiparallel_diodes_do_not_force_independent_follower_joint() {
++        let c = Circuit::new(
++            vec![
++                Element::Input(1, 0),
++                Element::Resistor(1, 2, 10e3),
++                Element::Diode {
++                    a: 2,
++                    b: 0,
++                    is: 1e-14,
++                    nvt: 0.025,
++                },
++                Element::Diode {
++                    a: 0,
++                    b: 2,
++                    is: 1e-14,
++                    nvt: 0.025,
++                },
++                Element::Dc(3, 0, 9.0),
++                Element::Resistor(3, 4, 10e3),
++                Element::Resistor(4, 0, 10e3),
++                Element::Resistor(5, 0, 10e3),
++                Element::Npn {
++                    c: 3,
++                    b: 4,
++                    e: 5,
++                    model: Q2N3904,
++                },
++            ],
++            (2, 0),
++            96_000.0,
++        );
++        assert_eq!(c.groups.iter().map(|g| g.len()).collect::<Vec<_>>(), vec![2, 1]);
++        let mut grouped = c.clone();
++        let mut full = c;
++        full.groups = vec![0..full.devices.len()];
++        full.group_ports = vec![full
++            .devices
++            .iter()
++            .flat_map(|(dev, first)| *first..*first + dev.ports())
++            .collect()];
++        full.sequential = true;
++        for t in 0..2000 {
++            let input = 0.7 * (t as f64 * 0.037).sin();
++            let a = grouped.tick(input);
++            let b = full.tick(input);
++            assert!((a - b).abs() < 1e-9, "sample {t}: {a} vs {b}");
++            for (a, b) in grouped.v.iter().zip(&full.v) {
++                assert!((a - b).abs() < 1e-9, "sample {t}: port {a} vs {b}");
++            }
++        }
++    }
++
+     #[test]
+     fn diode_clipper_satisfies_kcl() {
+         // Series resistor into a diode pair to ground; check the output solves the nonlinear KCL.
+-- 
+2.54.0 (Apple Git-157)
+

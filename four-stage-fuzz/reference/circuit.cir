@@ -1,0 +1,74 @@
+* Four Stage Sustainer: ElectroSmash American V3 (1976-77), as archived 2022:
+* https://electrosmash.mas-effects.com/big-muff-pi-analysis.html
+* Component values AND connectivity follow the figure "Big Muff Pi v3 Circuit Stages".
+* R2=39k C1=1u R14=47k R9=470k C10=470p R13=10k R22=100.
+* C4=1u Sustain=100k linear R23=1k C5=100n R19=10k R20=100k
+* R17=470k C12=470p C6=1u D3,D4=1N914 R18=10k R21=150.
+* C13=100n R12=10k R16=100k R15=470k C11=470p C7=1u
+* D1,D2=1N914 R11=10k R10=150; C9=4n R5=22k R8=39k C8=10n
+* Tone=100k linear; C3=100n R7=430k R3=100k R6=15k R4=3.3k
+* C2=100n Volume=100k linear. All Qs: NPN (2N5088 equivalent).
+* Text in the source contains contradictions: diagram values take precedence.
+* The diagram labels the 430k bias resistor R7; text parts list omits it.
+* Assumptions: ideal 9V supply, 1k source and 1Meg load, 0.2 V peak/0dBFS.
+* Q5088 reduced onsemi model from https://www.onsemi.com/pdf/datasheet/2n5088-d.pdf
+* IS BF BR VAF IKF RB RC RE only, omits leakage, transit time, junction capacitance.
+* 1N4148 equivalent, template diode model, fixed capacitance in DSP differs from SPICE.
+* Bypass, LED, power decoupling and wiring omitted. No claim of actual hardware matching.
+.model Q5088 NPN(IS=5.911f BF=1122 BR=1.271 VAF=62.37 IKF=14.92m RB=10 RC=1.61 RE=0)
+.model D1N4148 D(Is=2.52n Rs=0.568 N=1.752 Cjo=4p M=0.4 tt=20n)
+VCC vcc 0 DC 9
+$SOURCE
+RS in jack 1k
+R2 jack i1 39k
+C1 i1 b4 1u
+R14 b4 0 47k
+R9 b4 c4 470k
+C10 b4 c4 470p
+R13 vcc c4 10k
+R22 e4 0 100
+Q4 c4 b4 e4 Q5088
+C4 c4 sustop 1u
+RSUSTOP sustop sus {max(100k*(1-$SUSTAIN),1)}
+RSUSBOT sus susbot {max(100k*$SUSTAIN,1)}
+R23 susbot 0 1k
+C5 sus s3 100n
+R19 s3 b3 10k
+R20 b3 0 100k
+R17 b3 c3 470k
+C12 b3 c3 470p
+C6 b3 d3 1u
+D3 d3 c3 D1N4148
+D4 c3 d3 D1N4148
+R18 vcc c3 10k
+R21 e3 0 150
+Q3 c3 b3 e3 Q5088
+C13 c3 s2 100n
+R12 s2 b2 10k
+R16 b2 0 100k
+R15 b2 c2 470k
+C11 b2 c2 470p
+C7 b2 d2 1u
+D1 d2 c2 D1N4148
+D2 c2 d2 D1N4148
+R11 vcc c2 10k
+R10 e2 0 150
+Q2 c2 b2 e2 Q5088
+C9 c2 hi 4n
+R5 hi 0 22k
+R8 c2 lo 39k
+C8 lo 0 10n
+RTONEHI hi tone {max(100k*(1-$TONE),1)}
+RTONELO tone lo {max(100k*$TONE,1)}
+C3 tone b1 100n
+R7 vcc b1 430k
+R3 b1 0 100k
+R6 vcc c1 15k
+R4 e1 0 3.3k
+Q1 c1 b1 e1 Q5088
+C2 c1 voltop 100n
+RVOLTOP voltop out {max(100k*(1-$VOLUME),1)}
+RVOLBOT out 0 {max(100k*$VOLUME,1)}
+RLOAD out 0 1meg
+$ANALYSIS
+.end

@@ -1,0 +1,6 @@
+# Every control covered at 0 and 1.
+default
+allmax b63=1 b160=1 b410=1 b1k=1 b2k5=1 b7k7=1 b16k=1
+allmin b63=0 b160=0 b410=0 b1k=0 b2k5=0 b7k7=0 b16k=0
+alternating b63=1 b160=0 b410=1 b1k=0 b2k5=1 b7k7=0 b16k=1
+inverse b63=0 b160=1 b410=0 b1k=1 b2k5=0 b7k7=1 b16k=0
