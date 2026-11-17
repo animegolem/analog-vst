@@ -231,7 +231,8 @@ mod tests {
 
         c.limit_joint_iterations(1);
         let mut held = 0;
-        for k in 2000..4000 {
+        // Fewer samples than the bound on consecutive held samples, so this tests the hold alone.
+        for k in 2000..2800 {
             let failed_before = c.failed_solves();
             let y = c.tick(drive(k));
             assert!(y.is_finite() && y.abs() < RAIL_V, "output {y} V at sample {k}");
@@ -241,14 +242,12 @@ mod tests {
             }
             last = y;
         }
-        assert!(
-            held > 1000,
-            "the bound of 1 forced only {held} failures in 2000 samples"
-        );
+        assert!(held > 400, "the bound of 1 forced only {held} failures in 800 samples");
         assert_eq!(c.failed_solves(), held);
+        assert_eq!(c.rest_restores(), 0);
 
         c.limit_joint_iterations(200);
-        for k in 4000..8000 {
+        for k in 2800..6800 {
             let y = c.tick(drive(k));
             assert!(y.is_finite() && y.abs() < RAIL_V, "output {y} V at sample {k}");
         }
@@ -304,5 +303,33 @@ mod tests {
             assert!(c.tick(u).abs() < 1e-6);
         }
         assert_eq!(c.failed_solves(), 0);
+    }
+
+    #[test]
+    fn a_state_no_sample_solves_from_is_left_by_going_back_to_rest() {
+        // A 1e9 V, 1 kHz sine for 6000 samples leaves an accepted, finite capacitor history from
+        // which no later sample solves. Without the return to rest every silent sample after it is
+        // held for ever.
+        let (_, mut c) = build(1.0);
+        for k in 0..6000 {
+            let u = 1e9 * (std::f64::consts::TAU * 1000.0 * k as f64 / 576_000.0).sin();
+            assert!(c.tick(u).is_finite());
+        }
+        assert_eq!(c.rest_restores(), 0, "the sine itself does not need a return to rest");
+        for _ in 0..4096 {
+            assert!(c.tick(0.0).is_finite());
+        }
+        assert_eq!(c.rest_restores(), 1, "the stuck state is left once");
+        let failed = c.failed_solves();
+        for _ in 0..57_600 {
+            assert!(c.tick(0.0).abs() < 1e-6, "silence after the return is at rest");
+        }
+        // Ordinary input solves again.
+        for k in 0..57_600 {
+            let u = 5.0 * (std::f64::consts::TAU * 1000.0 * k as f64 / 576_000.0).sin();
+            assert!(c.tick(u).is_finite());
+        }
+        assert_eq!(c.failed_solves(), failed, "nothing is held after the return to rest");
+        assert_eq!(c.rest_restores(), 1);
     }
 }

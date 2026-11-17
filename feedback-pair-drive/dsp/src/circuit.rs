@@ -315,9 +315,21 @@ pub struct Circuit {
     y: f64,
     /// Samples whose solve failed and were held at the last valid state. Saturates.
     failed_solves: u64,
+    /// Failed samples in a row. At `MAX_CONSECUTIVE_HELD` the circuit goes back to `rest`.
+    consecutive_held: u32,
+    /// Times the circuit went back to `rest` because it could not leave a held state. Saturates.
+    rest_restores: u64,
+    /// The state the DC operating point leaves, kept so that `tick` can return to it without
+    /// allocating: capacitor history, port voltages, device currents, and the output.
+    rest: Vec<f64>,
     /// Iterations the joint solve may use, at most `JOINT_MAX_ITERATIONS`. Only tests lower it.
     joint_iterations: usize,
 }
+
+/// Failed samples in a row after which the circuit is put back at its DC operating point. Solves
+/// that fail on a few samples and then recover (44 scattered over 49,000 for a 5e6 V sine) never
+/// reach it; a state that no sample solves from would otherwise be held for ever.
+const MAX_CONSECUTIVE_HELD: u32 = 1024;
 
 impl Circuit {
     pub fn new(elements: Vec<Element>, output: (Node, Node), rate: f64) -> Self {
@@ -413,6 +425,9 @@ impl Circuit {
             operating_point: vec![0.0; nodes],
             y: 0.0,
             failed_solves: 0,
+            consecutive_held: 0,
+            rest_restores: 0,
+            rest: vec![0.0; nx + 2 * nn + 1],
             joint_iterations: JOINT_MAX_ITERATIONS,
             caps,
             ports,
@@ -613,6 +628,12 @@ impl Circuit {
         self.devices = order.iter().map(|&i| self.devices[i]).collect();
     }
 
+    /// Times since construction that the circuit was put back at its DC operating point because
+    /// `MAX_CONSECUTIVE_HELD` samples in a row could not be solved from the state it was in.
+    pub fn rest_restores(&self) -> u64 {
+        self.rest_restores
+    }
+
     /// SPICE-style DC operating point: Newton on the full nodal equations with capacitors open,
     /// stepping the DC sources up from zero. Sets the capacitor states and port voltages.
     fn solve_operating_point(&mut self) {
@@ -697,6 +718,12 @@ impl Circuit {
             self.z[base + first..base + first + np].copy_from_slice(&i[..np]);
             self.i_prev[first..first + np].copy_from_slice(&i[..np]);
         }
+        let (nx, nn) = (self.caps.len(), self.ports.len());
+        assert_eq!(self.rest.len(), nx + 2 * nn + 1);
+        self.rest[..nx].copy_from_slice(&self.x);
+        self.rest[nx..nx + nn].copy_from_slice(&self.v);
+        self.rest[nx + nn..nx + 2 * nn].copy_from_slice(&self.z[base..]);
+        self.rest[nx + 2 * nn] = self.y;
     }
 
     /// Processes one sample at the circuit's rate. Never panics on a bad sample:
@@ -779,9 +806,24 @@ impl Circuit {
             self.v.copy_from_slice(&self.v_prev);
             self.z[base..].copy_from_slice(&self.i_prev);
             self.failed_solves = self.failed_solves.saturating_add(1);
+            self.consecutive_held += 1;
+            if self.consecutive_held >= MAX_CONSECUTIVE_HELD {
+                // An accepted history can be one that no later sample solves from (seen after a
+                // 1e8 V input: every sample held from then on, at any iteration bound). Holding
+                // cannot leave it, so go back to the DC operating point, as at construction.
+                self.x.copy_from_slice(&self.rest[..nx]);
+                self.v.copy_from_slice(&self.rest[nx..nx + nn]);
+                self.v_prev.copy_from_slice(&self.rest[nx..nx + nn]);
+                self.z[base..].copy_from_slice(&self.rest[nx + nn..nx + 2 * nn]);
+                self.i_prev.copy_from_slice(&self.rest[nx + nn..nx + 2 * nn]);
+                self.y = self.rest[nx + 2 * nn];
+                self.consecutive_held = 0;
+                self.rest_restores = self.rest_restores.saturating_add(1);
+            }
             debug_assert!(self.y.is_finite() && finite(&self.x) && finite(&self.v));
             return self.y;
         }
+        self.consecutive_held = 0;
         self.x.copy_from_slice(&self.acc[..nx]);
         self.y = self.acc[nx];
         self.y

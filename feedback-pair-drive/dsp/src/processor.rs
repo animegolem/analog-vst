@@ -88,6 +88,14 @@ impl Processor {
             .fold(0, |n, (circuit, _)| n.saturating_add(circuit.failed_solves()))
     }
 
+    /// Times since construction, over both channels, that a circuit was put back at its DC
+    /// operating point because it could not leave a held state (see `Circuit::tick`). Saturates.
+    pub fn rest_restores(&self) -> u64 {
+        self.channels
+            .iter()
+            .fold(0, |n, (circuit, _)| n.saturating_add(circuit.rest_restores()))
+    }
+
     /// Delay in samples from the oversampling filters.
     pub fn latency(&self) -> usize {
         self.channels[0].1.latency()
