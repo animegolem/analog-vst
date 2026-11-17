@@ -129,8 +129,11 @@ The op-amp subcircuit is rescaled (same gain, same pole).
 ** DONE seven-band-eq: settle the slider value and range
 10 kΩ linear, from the kit seller's parts list. No component value changed. The range is set by fixed resistors.
 ** DONE Re-validate level 0 and volume 0 with section reset
-four-stage-fuzz and msk011-drive pass at 0 and now validate there. green-overdrive fails at level 0.
-** TODO green-overdrive: find why level 0 fails (harmonics 11.2 dB, burst null -30.5 dB)
+four-stage-fuzz and msk011-drive pass at 0 and now validate there. green-overdrive failed at level 0 until the next item.
+** DONE green-overdrive: find why level 0 fails (harmonics 11.2 dB, burst null -30.5 dB)
+Three stacked causes: the Solver's rest state, the reference not starting each Section at rest, and the reference's tolerance. green-overdrive now validates at level 0.
+** TODO Carry the green-overdrive Solver and harness fixes to the other Projects
+The rest-state pin, the pre-roll and the tighter reference are in green-overdrive only. The other Projects pass without them because their rest error is under the harmonics floor.
 ** TODO Benchmark the coupling-groups Solver against the present Solver, one Plugin at a time
 ** TODO Next T1 builds: Mini Drive, London Drive, Tonemender, Kinks SIGN
 One pull request per Project. Build Briefs are in =triage/triage.md=.
@@ -143,19 +146,20 @@ Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =
 * Open Questions
 - When do the Upstream Patches get sent to Somewhere Systems? Not yet; keep collecting. Decides: Golem.
 - Are binaries ever distributed? No objection and no plan. VST3 binaries built with nih-plug are GPLv3. Decides: Golem, when it comes up.
-- Why does green-overdrive fail at level 0 when the other two muted Settings pass? Decides: the build.
+- Is the SPICE reference converged at the harmonics floor (-200 dBFS)? Not shown: on green-overdrive at level 0, simulator settings from reltol 1e-7 to 1e-9 read floor-level lines up to about 1 dB apart. Decides: the build, or the floor is restated.
 
 * Settled Questions
 - 2026-11-17, Golem: the audience is one person's music production; the repository is public and others may use it.
 - 2026-11-17, Golem: Offline-only is acceptable. Real-time cost is not a goal.
 - 2026-11-17, Golem: Plugin, Project and Circuit are the terms; "filter" is avoided.
+- 2026-11-17, the build: green-overdrive failed at level 0 for three stacked reasons, not because SPICE cannot resolve a muted signal. See What We've Proven.
 
 * What We've Proven
 | Date | Result | Rerun |
 |---|---|---|
 | 2026-11-17 | msk011-drive with the section-reset harness: all-PASS, 4 Settings, including level 0 | =cd msk011-drive && rm -rf validation && ./validate.sh= |
 | 2026-11-17 | green-overdrive: all-PASS, 4 Settings (level at 0.05, not 0). References reused; Models rendered again | =cd green-overdrive && ./validate.sh= |
-| 2026-11-17 | green-overdrive at level 0: FAIL. Harmonics 11.23 dB (H3 of 100 Hz at -40 dBFS), burst null -30.54 dB | add =level-zero level=0= to a settings file; =SETTINGS=<file> ./validate.sh= |
+| 2026-11-17 | green-overdrive at level 0: FAIL. Harmonics 11.23 dB (H3 of 100 Hz at -40 dBFS), burst null -30.54 dB | superseded by the green-overdrive rows at the end of this table |
 | 2026-11-17 | four-stage-fuzz at volume 0: PASS, with the same errors as volume 1. The muted Setting no longer needs 0.05 | part of the four-stage-fuzz run below |
 | 2026-11-17 | Cost at 48 kHz, stereo, one benchmark at a time (load average about 7 on 16 cores): seven-band-eq 25.9%, green-overdrive 31.6%, msk011-drive 224%, four-stage-fuzz 337% | =cargo run -q --release --example bench -p dsp 48000= with =CARGO_TARGET_DIR=$PWD/target= |
 | 2026-11-17 | four-stage-fuzz at 576 kHz: 6 of 7 PASS; =tone_min= FAIL on frequency response, 0.124 dB | superseded by the next row |
@@ -174,3 +178,9 @@ Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =
 | 2026-11-17 | precision-rectifier at known alignment (delay 0, polarity +1): PASS, 1 Setting, reference simulated again. Frequency response 0.0054 dB, harmonics 0.0064 dB, burst null -112.85 dB over the whole burst. Attack and release measure nothing on this Circuit | =cd precision-rectifier && rm -rf validation && ./validate.sh= |
 | 2026-11-17 | precision-rectifier needs more resolution than the template gives: the reference at 4x oversampling differs from 24x by 0.83 dB on a sweep, at 16x by 0.012 dB. The Circuit runs at 2304 kHz; whether a lower rate passes a Full Validation was not tried | re-analysis of saved 1 s sweeps, by hand |
 | 2026-11-17 | precision-rectifier cost at 48 kHz, stereo: 90.8% of one core, one run, load average about 8 on 16 cores | =cargo run -q --release --example bench -p dsp 48000= with =CARGO_TARGET_DIR=$PWD/target= |
+| 2026-11-17 | green-overdrive at level 0, cause 1: with no input the shipped Model drifts to -9.7e-7 FS (about -120 dBFS) after every fresh start, at every Setting; with the operating point pinned it stays within 2.1e-11 FS. msk011-drive and four-stage-fuzz drift under 1e-10 FS at their muted Settings | 1 s of silence through each Project's =render= |
+| 2026-11-17 | green-overdrive at level 0, cause 2: the harness cut each Section at its first sample, where the band-limited onset is already nonzero (-0.2 mV on one Section), so ngspice took its operating point with that input. Starting each run in the preceding silence removes it | single Sections, by hand |
+| 2026-11-17 | green-overdrive at level 0, cause 3: at reltol=1e-6 the reference moves by about 3e-11 FS on lines near 1e-10 FS when the tolerance or step is tightened; the Model does not move. Any two of the three fixes leave a Section over 1 dB | single Sections, by hand |
+| 2026-11-17 | green-overdrive with all three fixes: all-PASS, 4 Settings including level 0, references simulated again. Worst harmonics 0.485 dB (level 0), burst null -80.0 dB. This is a PASS at reltol=1e-7, not a shown margin: one tighter single-Section run reads 1.13 dB | =cd green-overdrive && rm -rf validation && ./validate.sh= |
+| 2026-11-17 | green-overdrive DC operating point check: over 125 Control combinations at four sample rates the relative DC residual is at most 2.0e-16 (bound 1e-12); an operating point solved with an extra 100 nA at the bias node, 0.5 mV off, is rejected | =cargo test -p dsp --release -- --ignored= in green-overdrive |
+| 2026-11-17 | green-overdrive cost at 48 kHz, stereo: 30.7% of one core, one run (load averages 5.0, 16.1, 24.4) | =cargo run -q --release --example bench -p dsp 48000= with =CARGO_TARGET_DIR=$PWD/target= |
