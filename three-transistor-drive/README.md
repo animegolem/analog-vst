@@ -8,9 +8,12 @@ The Circuit is a discrete amplifier: an NPN differential pair drives a PNP commo
 
 ## Status
 
-- **Validated.** One Full Validation (not `QUICK`) on 2026-11-17 passed every Check at all four Settings on its first run, with ngspice 45. No Tolerance or Check was changed. The table is under Validation.
-- `cargo test` passes (14 tests) and `uv run pytest -q` in `harness/` passes (7 tests).
-- **CPU cost: 833% to 836% of one core per stereo instance at 48 kHz** (three runs of the bench: 836.0, 834.7, 832.9; load average about 6 to 7 at the time). The Plugin is **Offline-only**: bounce or freeze, do not play live. Measure on your machine with `env CARGO_TARGET_DIR=$PWD/target cargo run -q --release --example bench -p dsp 48000`.
+- **Validated.** Two Full Validations (not `QUICK`) on 2026-11-17, with ngspice 45, each passed every Check at all four Settings. No Tolerance or Check was changed. The table is under Validation.
+  - The first simulated the Netlist in SPICE and rendered the Model.
+  - The second followed the change that holds a sample the solver cannot solve (see Solver notes). It reused the first run's SPICE captures, because the Netlist and the Control values were unchanged, and rendered the Model again. Every Check value is the same as in the first run. The four Model captures are sample-for-sample identical to captures rendered from the source before that change.
+- `cargo test` passes (17 tests) and `uv run pytest -q` in `harness/` passes (7 tests).
+- **The held-sample path has not run on real input.** No input tried makes the solve fail with its bound of 200 iterations: the Pack at four Settings, and short probes of full-scale steps, noise, sines, pulses and impulses. The path is exercised only by a test that lowers the bound to 1. This is not a proof that the solve converges for every input.
+- **CPU cost: 833% to 843% of one core per stereo instance at 48 kHz** (four runs of the bench: 836.0, 834.7 and 832.9 at a load average of about 6 to 7, then 842.8 after the change at a load average of 4.9, 4.7, 6.7). The machine was not idle for any of them. The Plugin is **Offline-only**: bounce or freeze, do not play live. Measure on your machine with `env CARGO_TARGET_DIR=$PWD/target cargo run -q --release --example bench -p dsp 48000`.
 - Installed with `./install.sh` as VST3 and CLAP in the user plugin folders; both bundles pass `codesign -v`. Not loaded in a DAW.
 
 ## Control and levels
@@ -120,7 +123,7 @@ rm -rf validation && ./validate.sh
 
 Each Section is rendered from a fresh DC state, as SPICE does. Delete `validation/` when switching between `QUICK=1` and a full run: the Pack is cached without regard to the mode.
 
-Full Validation of 2026-11-17, the worst value of each Check over the four Settings. All 28 Checks passed.
+Full Validation of 2026-11-17 (the second run; the first gave the same values), the worst value of each Check over the four Settings. All 28 Checks passed.
 
 | Check | Worst value | Tolerance | Setting and case |
 |---|---|---|---|
@@ -168,7 +171,7 @@ env CARGO_TARGET_DIR=$PWD/target cargo test
 ./install.sh
 ```
 
-`validate.sh` and `install.sh` force `CARGO_TARGET_DIR=$PWD/target` themselves. Install only after every Setting passes a full validation. A full validation of the four Settings took about 30 minutes here.
+`validate.sh` and `install.sh` force `CARGO_TARGET_DIR=$PWD/target` themselves. Install only after every Setting passes a full validation. A full validation of the four Settings took about 30 minutes here; with the SPICE captures reused, about 18 minutes.
 
 ## Rights
 
