@@ -97,6 +97,7 @@ Seen so far, with what the harness does today.
 | Shell environment | =CARGO_TARGET_DIR= exported: scripts run another Project's binaries | Each Project's scripts force =$PWD/target= |
 | Cache | =validation/pack= reused across Quick and Full runs | Delete =validation/= before a Full Validation |
 | Machine load | Parallel validations distort cost numbers | Rule: one at a time |
+| Solver | The joint Newton solve does not converge within its bound (seen under hard clipping before junction limiting; still reachable with extreme input) | The two transistor drives limit junction steps, hold the sample, count it, and their =render= fails. In the other Projects a release build commits the unconverged result |
 | Harness | Sync-chirp alignment locks onto the wrong image for a Circuit that removes the fundamental; both captures shift alike, so Checks pass while part of a Section is left out | precision-rectifier compares its own captures at their known alignment; the other Projects still use the chirp (green-overdrive at level 0 reads a delay of 197 samples on both sides) |
 | ngspice | A maximum step of a quarter of the oversampled period puts signal-dependent sidebands (about -84 dBc) in the reference of a linear Circuit | stack-boost's =spice.py= uses a sixteenth; the other Projects still use a quarter |
 | Harness | A Section is cut at its first sample, so ngspice takes its operating point with a nonzero input | stack-boost's =spice.py= starts each Section from silence; green-overdrive's is fixed in its own pull request; the others are not |
@@ -139,6 +140,9 @@ The rest-state pin, the pre-roll and the tighter reference are in green-overdriv
 One pull request per Project. Build Briefs are in =triage/triage.md=.
 - DONE Tonemender: =stack-boost/= (Three-Band Stack Boost), all-PASS at 6 Settings, Installed
 - DONE Kinks SIGN: =precision-rectifier/= (Precision Rectifier), PASS at its one Setting, Installed
+- DONE Mini Drive: =three-transistor-drive/= (Three-Transistor Drive), all-PASS at 4 Settings, Installed, Offline-only
+** TODO Carry junction limiting and failed-solve containment to msk011-drive and four-stage-fuzz
+Both have the template's joint solve, which commits an unconverged result in a release build.
 ** TODO Decide which Upstream Patches to send
 Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =upstream-patches/NOTES.md=.
 ** DONE Port the section-reset harness to msk011-drive
@@ -184,3 +188,8 @@ Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =
 | 2026-11-17 | green-overdrive with all three fixes: all-PASS, 4 Settings including level 0, references simulated again. Worst harmonics 0.485 dB (level 0), burst null -80.0 dB. This is a PASS at reltol=1e-7, not a shown margin: one tighter single-Section run reads 1.13 dB | =cd green-overdrive && rm -rf validation && ./validate.sh= |
 | 2026-11-17 | green-overdrive DC operating point check: over 125 Control combinations at four sample rates the relative DC residual is at most 2.0e-16 (bound 1e-12); an operating point solved with an extra 100 nA at the bias node, 0.5 mV off, is rejected | =cargo test -p dsp --release -- --ignored= in green-overdrive |
 | 2026-11-17 | green-overdrive cost at 48 kHz, stereo: 30.7% of one core, one run (load averages 5.0, 16.1, 24.4) | =cargo run -q --release --example bench -p dsp 48000= with =CARGO_TARGET_DIR=$PWD/target= |
+| 2026-11-17 | Template Solver under hard clipping: the joint Newton solve ran out of its 64 iterations on three-transistor-drive at full drive and the output ran away (1e23 V, then NaN). With SPICE-style junction limiting it converges; in counted renders it took 17 iterations at most | =cargo test -p dsp= in three-transistor-drive |
+| 2026-11-17 | three-transistor-drive: all-PASS, 4 Settings including Drive at 0. Worst harmonics 0.35 dB, frequency response 0.016 dB, burst null -71.7 dB. First use of the Solver's PNP path; the operating point agrees with ngspice within 8 µV | =cd three-transistor-drive && rm -rf validation && ./validate.sh= |
+| 2026-11-17 | three-transistor-drive needs a circuit rate of 4.608 MHz: at 576 kHz the second harmonic of a 5 kHz tone at full drive was up to 10.3 dB from SPICE | by hand, in the Project README |
+| 2026-11-17 | three-transistor-drive holds a sample the Solver cannot solve (state kept, output repeated, counted, no panic), and =render= refuses to write a capture that contains one. The Pack produced none at 4 Settings; the converged output is sample-for-sample identical to before the change. A 1 kHz sine at a normalized peak of 1e6 does reach the hold | =cargo test -p dsp=; re-validation with references reused |
+| 2026-11-17 | three-transistor-drive cost at 48 kHz, stereo: 843% of one core, one run (load average about 5). Offline-only | =cargo run -q --release --example bench -p dsp 48000= with =CARGO_TARGET_DIR=$PWD/target= |
