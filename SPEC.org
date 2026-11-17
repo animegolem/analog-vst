@@ -136,13 +136,14 @@ Three stacked causes: the Solver's rest state, the reference not starting each S
 ** TODO Carry the green-overdrive Solver and harness fixes to the other Projects
 The rest-state pin, the pre-roll and the tighter reference are in green-overdrive only. The other Projects pass without them because their rest error is under the harmonics floor.
 ** TODO Benchmark the coupling-groups Solver against the present Solver, one Plugin at a time
-** TODO Next T1 builds: Mini Drive, London Drive, Tonemender, Kinks SIGN
+** DONE Next T1 builds: Mini Drive, London Drive, Tonemender, Kinks SIGN
 One pull request per Project. Build Briefs are in =triage/triage.md=.
 - DONE Tonemender: =stack-boost/= (Three-Band Stack Boost), all-PASS at 6 Settings, Installed
 - DONE Kinks SIGN: =precision-rectifier/= (Precision Rectifier), PASS at its one Setting, Installed
 - DONE Mini Drive: =three-transistor-drive/= (Three-Transistor Drive), all-PASS at 4 Settings, Installed, Offline-only
+- DONE London Drive: =feedback-pair-drive/= (Feedback Pair Drive), all-PASS at 4 Settings, Installed, Offline-only
 ** TODO Carry junction limiting and failed-solve containment to the other transistor Projects
-msk011-drive has the template's joint solve, which commits an unconverged result in a release build. four-stage-fuzz was not examined.
+msk011-drive has the template's joint solve, which commits an unconverged result in a release build. four-stage-fuzz was not examined. three-transistor-drive holds a failed sample but has no return to rest; feedback-pair-drive has both.
 ** TODO Decide which Upstream Patches to send
 Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =upstream-patches/NOTES.md=.
 ** DONE Port the section-reset harness to msk011-drive
@@ -193,3 +194,7 @@ Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =
 | 2026-11-17 | three-transistor-drive needs a circuit rate of 4.608 MHz: at 576 kHz the second harmonic of a 5 kHz tone at full drive was up to 10.3 dB from SPICE | by hand, in the Project README |
 | 2026-11-17 | three-transistor-drive holds a sample the Solver cannot solve (state kept, output repeated, counted, no panic), and =render= refuses to write a capture that contains one. The Pack produced none at 4 Settings; the converged output is sample-for-sample identical to before the change. A 1 kHz sine at a normalized peak of 1e6 does reach the hold | =cargo test -p dsp=; re-validation with references reused |
 | 2026-11-17 | three-transistor-drive cost at 48 kHz, stereo: 843% of one core, one run (load average about 5). Offline-only | =cargo run -q --release --example bench -p dsp 48000= with =CARGO_TARGET_DIR=$PWD/target= |
+| 2026-11-17 | feedback-pair-drive with the template Solver: Level 1 with a 5 V, 1 kHz input ran to 1e21 V at circuit sample 326, then NaN. With SPICE-style junction limiting it converges | =cargo test -p dsp= in feedback-pair-drive |
+| 2026-11-17 | feedback-pair-drive: all-PASS, 4 Settings (Level 0, 0.5, 0.9, 1). Worst frequency response 0.053 dB, harmonics 0.24 dB, burst null -61.6 dB. No held sample in the Pack: =render= fails on one | =cd feedback-pair-drive && rm -rf validation && ./validate.sh= |
+| 2026-11-17 | feedback-pair-drive: a 1 kHz sine of 1e8 V or more leaves an accepted, finite capacitor history from which no later sample solves, at any iteration bound; the cause is not diagnosed. The circuit returns to its DC operating point after 1024 failed samples in a row. The Pack's captures are sample-for-sample identical with and without that change | =cargo test -p dsp=; re-validation with references reused |
+| 2026-11-17 | feedback-pair-drive cost at 48 kHz, stereo: 172.7% of one core, one run (load average about 5.8), measured before the last two Solver changes. Offline-only | =cargo run -q --release --example bench -p dsp 48000= with =CARGO_TARGET_DIR=$PWD/target= |
