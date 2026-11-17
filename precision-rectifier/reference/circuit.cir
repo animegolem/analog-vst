@@ -1,0 +1,76 @@
+* Precision full-wave rectifier: two op-amp sections and two diodes, out = |in|, DC-coupled.
+* SPICE reference for dsp/src/model.rs. Keep the two in step: same parts, same values.
+* Placeholders (dollar-prefixed names) are filled by the harness: SOURCE and ANALYSIS by the
+* runner. This Circuit has no Controls, so there is no other placeholder.
+*
+* Modeled after the full-wave output of the rectifier section of the Mutable Instruments Kinks
+* v4.1 circuit, designed by Emilie Gillet, hardware licence CC BY-SA 3.0. Component facts were
+* transcribed from the sources below; no schematic file is copied. See README.md for the full
+* account of sources, assumptions, omissions and their measured cost.
+*
+* Sources:
+*  [S1] Schematic kinks_v41, sheet 1 of 4 "HW/FW rectifiers", dated 02/04/2019:
+*       https://pichenettes.github.io/mutable-instruments-documentation/modules/kinks/downloads/kinks_v41.pdf
+*  [S2] Bill of materials "Kinks, v4.1" (values, tolerances, part numbers):
+*       https://github.com/pichenettes/eurorack/blob/master/kinks/hardware_design/Kinks.xlsx
+*  [S3] Module documentation (input impedance 66k for RECTIFY, +/-12 V supply, DC-coupled):
+*       https://pichenettes.github.io/mutable-instruments-documentation/modules/kinks/
+*  [S4] TI TL07xx datasheet SLOS080 (open-loop gain 200 V/mV typ; unity-gain bandwidth 3 MHz typ
+*       in the July 2017 revision N, 3 MHz or 5.25 MHz by package and die in revision W):
+*       https://www.ti.com/lit/ds/symlink/tl074.pdf
+*  [S5] Fairchild 1N4148WT datasheet rev. A2 (capacitance 4 pF maximum at 0 V).
+*
+* Values, all from [S1] sheet 1 and confirmed in [S2]:
+*  R2 200k, R3 100k, D3/D4 1N4148, IC1A (TL074); R4 100k; R5 100k, R8 100k, R9 200k, R7 200k,
+*  IC1C (TL074); R13 180. The 100k and 200k parts are 0.1 % in [S2]; R13 is 1 %.
+*
+* Reduced configuration:
+*  - Ideal voltage source at the input jack. ASSUMPTION. The inverter (R6, R11, IC1B, R12) and
+*    the indicator (IC2, R10, LED1) hang on the input and on IC1B's output only; with a 0 ohm
+*    source they have no path to node "out" and are omitted.
+*  - Half-wave output stage (IC1D, R1, R14) omitted. Its input resistor R4 is kept as the load
+*    it places on node x, returned to ground instead of to IC1D's virtual ground. ASSUMPTION.
+*  - Output taken after R13 into a 100k load. ASSUMPTION (the load is not in any source).
+*  - 0 dBFS = 5 V peak. ASSUMPTION. Op-amp outputs then stay between -2.98 V and +5.00 V.
+*
+* Device models (the DSP model uses the same):
+*  - TL074 sections: single pole, A0 = 2e5, GBW = 3 MHz (OPEN VALUE: 5.25 MHz is the figure
+*    for the newer die). No rail clipping, slew limit, offset, bias current or noise. No
+*    supply appears because this op-amp has no supply pins.
+*  - 1N4148: IS, RS, N, CJO as in the analog-to-vst template's D1N4148 (original publisher of
+*    the set not confirmed). M=0 and TT=0 here, where the template line has M=0.4 tt=20n: the
+*    junction capacitance is then the fixed CJO and there is no transit-time charge, which is
+*    the diode the Solver has. No reverse breakdown.
+
+.subckt opamp inp inn out
+* A0 = gm*Rp = 2e5; pole = 1/(2*pi*Rp*Cp) = 15 Hz = GBW/A0, GBW = 3 MHz.
+* Rescaled form (gm 1e-3 A/V), as in seven-band-eq: the template's gm = 100 form made ngspice
+* stop with "Timestep too small" there.
+G1 0 p inp inn 1e-3
+Rp p 0 2e8
+Cp p 0 53.0516476973p
+E1 out 0 p 0 1
+.ends
+
+.model D4148 D(Is=2.52n Rs=0.568 N=1.752 Cjo=4p M=0 tt=0)
+
+$SOURCE
+* Inverting half-wave stage: x = -in/2 for in > 0, x = 0 for in < 0.
+R2 in a1n 200k
+XU1A 0 a1n a1o opamp
+D3 a1o a1n D4148
+D4 x a1o D4148
+R3 a1n x 100k
+* Load of the omitted half-wave output stage (R4 into IC1D's virtual ground).
+R4 x 0 100k
+* Summing stage: c1o = -(in + 4x) = |in|.
+R8 x c1n 100k
+R5 x c1n 100k
+R9 in c1n 200k
+R7 c1n c1o 200k
+XU1C 0 c1n c1o opamp
+R13 c1o out 180
+RLOAD out 0 100k
+
+$ANALYSIS
+.end
