@@ -4,7 +4,7 @@ A stereo plugin modeled after the Music Thing Modular London Drive circuit (Prot
 
 The Circuit has four transistors. A long-tailed NPN pair (Q6, Q7) and a PNP second stage (Q3) form an inverting feedback amplifier with a 100k feedback resistor. An NPN phase splitter (Q5) with equal 2.7k collector and emitter resistors follows it. There is one Control, Level.
 
-**Status: validated, all Checks pass at all four Settings** (Full Validation, one run, ngspice 45). The Plugin is **Offline-only**: it costs 173.8% of one core per stereo instance at 48 kHz on the test machine, so it can be bounced or frozen but not played live there.
+**Status: validated, all Checks pass at all four Settings** (Full Validation of the current Solver, SPICE references from ngspice 45). The Plugin is **Offline-only**: it costs 172.7% of one core per stereo instance at 48 kHz on the test machine, so it can be bounced or frozen but not played live there.
 
 **Nothing was measured on hardware.** Validation compares two simplified descriptions of one Circuit: `reference/circuit.cir` (ngspice) and `dsp/src/model.rs`. No unit was measured and no recording was consulted.
 
@@ -114,7 +114,7 @@ It happens because the amplifier output pushes Q5's base to about -20 V through 
 
 ## Validation
 
-Full Validation with `./validate.sh`, ngspice 45, the full Pack (45 Sections), each Section started from the operating point in both the reference and the Model. No Tolerance and no Check was changed. It passed on the first run.
+Full Validation with `./validate.sh`, ngspice 45, the full Pack (45 Sections), each Section started from the operating point in both the reference and the Model. No Tolerance and no Check was changed. It was run twice and passed both times: once in full, and once more after the Solver's failure handling changed (see "Solver change in this Project"). The second run reused the saved ngspice references, because the Netlist, the SPICE runner and the Pack were unchanged, and rendered the Model again at all four Settings. The tables below are from the second run; its four reports are identical to the first run's.
 
 | Setting | Level | Result |
 |---|---|---|
@@ -139,9 +139,9 @@ Burst null per Setting: -99.53 dB (`default`), -99.37 dB (`zero`), -61.58 dB (`h
 
 What this shows: the Model agrees with the Netlist. It does not show agreement with hardware; see the breakdown and transistor-model sections above.
 
-**Cost:** `cargo run -q --release --example bench -p dsp 48000` printed 173.8% of one core per stereo instance at 48 kHz (one run, machine otherwise idle). Measure on yours with the same command.
+**Cost:** `cargo run -q --release --example bench -p dsp 48000` printed 172.7% of one core per stereo instance at 48 kHz (one run, with the changed Solver, nothing else heavy running, load average 5.8 on the test machine). The run before the Solver change printed 173.8%; one run each does not show a difference. Measure on yours with the same command.
 
-**Tests:** `cargo test` passes (17 tests in `dsp`); `cd harness && uv run pytest -q` passes (7 tests).
+**Tests:** `cargo test` passes (22 tests in `dsp`); `cd harness && uv run pytest -q` passes (7 tests).
 
 ## Checked by hand
 
@@ -163,7 +163,15 @@ Bad samples are contained instead of asserted on, so nothing here can panic on t
 
 Unit tests force each case: an iteration bound of 1 in the middle of a clipped sine, inputs of 1e6 V and 1e300 V, NaN and infinite samples, and a NaN Control.
 
-These changes came after the Full Validation recorded above, which has not been rerun. Rendering the full Pack again with the changed Solver gave the same samples as the validated captures at `default`, `zero` and `high`. At `full`, 735 of 7,353,600 samples differ, by at most 7.3e-12 of full scale, all in the silence after the -40 dB sweep; the cause is the convergence test, which now reads the Newton correction instead of the difference of the voltages before and after the step. Comparing that render with the saved reference gave a report identical to the recorded one.
+What the containment does not do:
+
+- It does not show that the solve converges for every input, Control history or sample rate. The Full Validation, the unit tests and a reviewer's 72 probe cases (four sample rates, Level 0.5, 0.9 and 1, 4096 samples each) had no failed solve; inputs of the 1e6 V class do produce failed solves.
+- It does not clamp the output. A held sample repeats the last good output, and at an absurd input a converged sample can itself be far outside the rails.
+- After an input of the 1e6 V class the Model takes about 4 s of silence to return to rest. That was not compared with ngspice.
+- One assertion can still be reached on the audio thread in a release build: the matrix inversion that follows a Control change asserts that the matrix is not singular. No Control value or input tried has triggered it.
+- The Plugin does not read or show the failure counter.
+
+These changes came after the first Full Validation. The Full Validation was then run again with the changed Solver and passed at all four Settings, with reports identical to the first run's. The rendered samples are not bit-identical to the first run's at `full`: a render made with the changed Solver before the rerun was compared with the first run's captures and matched at `default`, `zero` and `high`; at `full`, 735 of 7,353,600 samples differed, by at most 7.3e-12 of full scale, all in the silence after the -40 dB sweep. The cause is the convergence test, which now reads the Newton correction instead of the difference of the voltages before and after the step. The rerun's captures have the same samples as that render at all four Settings.
 
 ## Build and use
 
