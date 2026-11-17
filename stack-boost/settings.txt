@@ -1,0 +1,12 @@
+# Knob settings to validate: a name, then control=rotation pairs (0 = fully counter-clockwise,
+# 1 = fully clockwise). Controls not listed use their defaults.
+# Every control is at 0 and at 1 in a setting other than all_min, so coverage of both ends does
+# not depend on that corner. No single control mutes the output; all_min is the near-mute corner
+# (bass = mid = treble = 0: about -97 dB at 1 kHz). max_gain is the largest-gain position found
+# (+34.7 dB at 5 kHz), where the op-amp output check for VOLTS_PER_FULL_SCALE was made.
+default
+all_max bass=1 mid=1 treble=1 level=1
+all_min bass=0 mid=0 treble=0 level=0
+max_gain bass=0 mid=1 treble=1 level=1
+bass_mid_min bass=0 mid=0 treble=1 level=0.5
+treble_level_min bass=1 mid=1 treble=0 level=0
