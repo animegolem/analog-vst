@@ -25,7 +25,7 @@ These are single-Section runs through the harness's own code, not a Full Validat
 
 ## Validation
 
-Full Validation of 2026-11-17 (`rm -rf validation && ./validate.sh`, ngspice 45, 96 kHz pack, all four references simulated again with the pre-roll and reltol=1e-7): PASS at every Setting in `settings.txt`.
+Full Validation of 2026-11-17 (`rm -rf validation && ./validate.sh`, ngspice 45, 96 kHz pack, all four references simulated again with the derived pre-roll and reltol=1e-7), run after the DC operating-point checks and the derived pre-roll went in: PASS at every Setting in `settings.txt`. Every Check value below is the same, to the digits the harness prints, as in the Full Validation before those changes.
 
 | Setting | Controls | Result |
 |---|---|---|
@@ -48,7 +48,14 @@ Worst value of each Check over the four Settings:
 
 At level-zero alone: frequency response 0.046 dB, static gain 0.0026 dB, harmonics 0.485 dB, intermodulation 0.0096 dB, burst waveform null -93.06 dB. The level-zero harmonics value is one run against one reference; the table in the section above shows how far that reading can move with the simulator's settings.
 
-Cost: 30.8% of one core per stereo instance at 48 kHz (`cargo run -q --release --example bench -p dsp 48000`, one trial on an Apple M3 Max with nothing else running). The Circuit runs at 576 kHz or above.
+What this run does not show:
+
+- Convergence of the reference, or margin across simulator settings. The level-zero harmonics PASS holds at the simulator settings used; one tighter single-Section run in the table above reads 1.13 dB against the 1 dB Tolerance.
+- Any sample rate but 96 kHz. The pre-roll at 44.1, 48, 88.2 and 192 kHz is covered by a harness test with ngspice replaced by a wire, not by a Full Validation.
+- That the DC operating point is right in an absolute sense. The residual check uses the same element stamps and device equations as the DC solve, so an error in those passes it; only the comparison with ngspice covers them. The DC solve does not reach its own 1e-12 V stopping step on this Circuit (the last step measured at most 1.8e-9 V) and the cause is not established.
+- Behaviour while a Control moves.
+
+Cost: 30.7% of one core per stereo instance at 48 kHz (`cargo run -q --release --example bench -p dsp 48000`, one trial on an Apple M3 Max, no other validation or benchmark running, load averages 5.03, 16.14 and 24.41 over 1, 5 and 15 minutes). The Circuit runs at 576 kHz or above.
 
 ## Assumptions
 
