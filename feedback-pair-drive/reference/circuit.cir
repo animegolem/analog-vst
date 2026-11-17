@@ -1,0 +1,74 @@
+* Feedback Pair Drive: four-transistor feedback drive. One-input, one-output reduction of the
+* Music Thing Modular London Drive (Proto 1, Rev 1 schematic, one sheet dated 14/11/2022).
+* Three transistors form an inverting feedback amplifier (Q6, Q7, Q3); the fourth (Q5) is a
+* phase splitter. Component facts were transcribed independently; no schematic is copied.
+* SPICE reference for dsp/src/model.rs. Keep the two in step: same parts, values, pot formula.
+* Placeholders (dollar-prefixed names) are filled by the harness: SOURCE, ANALYSIS and LEVEL.
+* Source of every value and of the topology:
+*   https://www.musicthing.co.uk/collateral/london_drive_Rev1_Schematic.pdf
+* Reduced configuration (build brief, triage/triage.md item 6):
+*   IN_HIGH jack only; IN_LOW unpatched, so its branch (VR2 gang 1, R25 1k) ends
+*   open at the jack and is left out. Supply jumper SJ2 on -12V, so the -9V shunt
+*   regulator (Q2 R3 R4 R5 C3 C4) drives nothing and is left out. Output taken at
+*   NON-INV (Q5 collector through C5); INVERT (Q5 emitter through C6) is terminated
+*   in the same assumed load so the splitter keeps a load on both sides.
+*   Lamp driver (R10, Q1 pair, Q4, R11-R14, C8, lamp) left out; the lamp is not a
+*   supported part and sits outside the audio path. README has the measured cost.
+* Parts: VR2 gang 2 100k linear (marked B100k) wired as a series rheostat, wiper
+*   tied to the jack end; R1 0 ohm (a wire here); C12 2.2u; R26 470; R28 100k;
+*   Q6 Q7 MMBTH10; R27 100k; R29 15k; C13 10n; Q3 BC858B; R2 2.7k; C7 1u;
+*   R6 36k; R7 15k; Q5 MMBTH10; R8 2.7k; R9 2.7k; C5 1u; C6 1u.
+* Control: LEVEL, 0 to 1 linear; series resistance = 100k * (1 - LEVEL), 1 ohm end stop.
+*   Clockwise = more gain is ASSUMED. The pot symbol carries a small arrow toward the
+*   R1 end, which supports it if that is the usual clockwise marker; unconfirmed.
+* Assumptions: ideal +/-12V rails (series 1N5819 protection diodes and the 22u
+*   rail capacitors left out); 1k source (typical Eurorack output); 100k load on
+*   each output (typical Eurorack input); 5V = 0dBFS peak; ideal capacitors.
+* MMBTH10: onsemi (Fairchild) model, https://www.onsemi.com/pub/Collateral/MMBTH10.LIB
+*   Published: IS=69.28e-18 BF=308.6 BR=1.11 VAF=100 IKF=22.83m RB=10 RC=4, no RE
+*   (taken as 0), plus ISE=69.28e-18 NE=1.197 NC=2 XTB CJC CJE TF TR ITF VTF XTF.
+*   Left out: ISE/NE, NC, temperature and charge-storage terms. NOT an exact match:
+*   in the published model the ISE term carries most of the base current (ngspice,
+*   full model, this circuit: hFE 77 at 52-59uA in Q6/Q7, 110 at 2.2mA in Q5; this
+*   reduced model gives 343-345 and 314). Measured effect on this circuit: up to
+*   0.17 dB small-signal (20Hz-20kHz), 1.6 percent on clipped peaks, 80 mV on the
+*   clipped waveform's mean. The published BF is kept (no refit). See README.
+* BC858B: Nexperia model, https://assets.nexperia.com/documents/spice-model/BC858B.txt
+*   Published MAIN device: IS=1.95e-14 BF=297.2 BR=10.02 VAF=41.13 IKF=83.1m RB=220
+*   RC=0.2657 RE=1.045. Left out: NF=1.022 NR=1.021 ISE NE ISC NC VAR IKR IRB RBM,
+*   charge storage, and the vendor's quasi-saturation helper network (second
+*   transistor, 561.1 ohm, diode) with its 0.9607 area factor.
+* Both models: NF=NR=1, no junction charge, no leakage, no reverse breakdown.
+*   In overdrive this Netlist reverse-biases Q5 base-emitter by up to 8.0V and the
+*   input pair by up to 4.7V (MMBTH10 rating 3.0V), and Q5 collector-base by up to
+*   31.8V (rating 30V). Real parts would break down there; this Netlist does not.
+* Validation establishes agreement with this simplified Netlist, not hardware.
+.model QH10 NPN(IS=69.28e-18 BF=308.6 BR=1.11 VAF=100 IKF=22.83m RB=10 RC=4 RE=0)
+.model QBC858B PNP(IS=1.95e-14 BF=297.2 BR=10.02 VAF=41.13 IKF=83.1m RB=220 RC=0.2657 RE=1.045)
+VCC vp 0 DC 12
+VEE vn 0 DC -12
+$SOURCE
+RS in jack 1k
+RLEVEL jack pw {max(100k * (1 - $LEVEL), 1)}
+C12 pw sum 2.2u
+R26 sum b6 470
+R28 b6 vo 100k
+Q6 vp b6 tail QH10
+Q7 c7 0 tail QH10
+R27 tail vn 100k
+R29 vp c7 15k
+C13 vp c7 10n
+Q3 vo c7 vp QBC858B
+R2 vo vn 2.7k
+C7 vo b5 1u
+R6 vp b5 36k
+R7 b5 vn 15k
+Q5 c5 b5 e5 QH10
+R8 vp c5 2.7k
+R9 e5 vn 2.7k
+C5 c5 out 1u
+RLOAD out 0 100k
+C6 e5 outinv 1u
+RLOADI outinv 0 100k
+$ANALYSIS
+.end

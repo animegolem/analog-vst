@@ -18,6 +18,7 @@ plugin with measured hardware.
 | `stack-boost/` | Three-Band Stack Boost: two op-amp stages around a passive bass, mid and treble tone stack |
 | `precision-rectifier/` | Precision Rectifier: two op-amp sections and two diodes, a DC-coupled full-wave rectifier with no controls |
 | `three-transistor-drive/` | Three-Transistor Drive: NPN differential pair and a PNP stage with feedback, one drive control (offline-only) |
+| `feedback-pair-drive/` | Feedback Pair Drive: long-tailed pair, PNP stage and phase splitter in a feedback amplifier, one level control (offline-only) |
 | `template-check/` | The unmodified template example, kept as a baseline |
 | `triage/` | A catalog of 104 candidate circuits sorted into tiers, with build briefs |
 | `upstream-patches/` | Patches and notes for the upstream template |
