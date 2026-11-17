@@ -19,7 +19,6 @@ plugin with measured hardware.
 | `triage/` | A catalog of 104 candidate circuits sorted into tiers, with build briefs |
 | `upstream-patches/` | Patches and notes for the upstream template |
 | `SPEC.org` | The spec: objective, glossary, rules, live work, and what has been proven |
-| `HANDOFF.md` | Current status, known problems, and next steps |
 | `WORKER-BRIEF.md` | Environment facts and lessons for an agent that builds a plugin |
 
 Each plugin directory is a separate Cargo workspace with its own `README.md`, which lists the

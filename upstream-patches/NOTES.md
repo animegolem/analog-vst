@@ -2,6 +2,18 @@
 
 Nothing has been filed or pushed. Evidence comes from the green-overdrive and msk011-drive projects.
 
+## Status of the local branches (clone in `upstream-work/analog-to-vst`, not tracked here)
+
+- `section-reset-render` (1753cb3): the model renders each test section from a fresh DC state, as
+  SPICE does. Ready. Patch: `section-reset/`; write-up: `section-reset.md`.
+- `solver-coupling-groups`: commit 1 forces `CARGO_TARGET_DIR` (ready, `0001-*`). Commit 2 solves each
+  coupled device group jointly and adds a relative sweep criterion (experimental, `0002-*`,
+  `solver-coupling-groups.md`). Its CPU numbers were measured on an overloaded machine. Known gaps:
+  greedy ordering, not a true topological sort; groups are fixed at construction.
+
+Item 3 below is partly superseded: with section reset, four-stage-fuzz (volume 0) and msk011-drive
+(level 0) pass at a muted setting. green-overdrive still fails at level 0.
+
 ## 1. A single tightly coupled device pair makes the whole circuit use the joint solve (high impact, small)
 
 `template/dsp/src/circuit.rs` `order_devices()` computes ONE `loop_gain` over all device pairs and sets

@@ -2,5 +2,6 @@
 default
 min-drive-tone drive=0 tone=0 level=1
 max-drive-tone drive=1 tone=1 level=1
-# level=0 leaves ~1 ohm to ground (~-100 dB): below the SPICE reference precision, so 0.05 is used.
+# level=0 still fails with section reset (harmonics 11.2 dB, burst null -30.5 dB, 2026-11-17), so 0.05
+# is used. The cause is not established.
 level-low level=0.05

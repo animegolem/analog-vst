@@ -15,6 +15,7 @@
   before the final full run (the pack cache ignores QUICK).
 - Command approvals are auto-approved for workers.
 - Only edit inside your own project directory.
+- Run one validation at a time. Several at once overload the machine and make every CPU benchmark meaningless.
 
 - ~/.zshrc exports CARGO_TARGET_DIR=~/.cargo-target and BACKGROUND terminal processes inherit it.
   Project validate.sh/install.sh now force `CARGO_TARGET_DIR=$PWD/target`; for any other background cargo command
@@ -23,8 +24,8 @@
 ## Lessons already learned (apply them)
 1. Antiparallel diodes: write `n.diode_pair(a, b, model)` in model.rs (netlist keeps two D lines). Two separate
    `n.diode` calls make the solver joint-solve every device in the circuit (CPU ~4x).
-2. Controls that mute the output (volume at 0) are below SPICE precision (~-100 dB): validate at 0.05 instead,
-   comment why in settings.txt.
+2. Validate controls that mute the output at 0. With the section-reset harness, four-stage-fuzz (volume=0) and
+   msk011-drive (level=0) pass there. green-overdrive still fails at level=0 and uses 0.05; the cause is open.
 3. Template BJT model is reduced Gummel-Poon (no charge storage/leakage). Take IS,BF,BR,VAF,IKF,RB,RC,RE from a cited
    vendor model and use the SAME reduced .model in the .cir. Document the omission.
 4. Op-amps: single-pole, no rail clipping/slew. Check op-amp outputs stay inside the rails at max settings with your
