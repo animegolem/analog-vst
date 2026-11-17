@@ -1,12 +1,12 @@
 #+TITLE: analog-vst
 #+OPTIONS: num:t
 
-/Status: draft. The Objective Function, the goals, and the non-goals are proposed by the maintainer seat and wait on Golem's answers to the Open Questions./
-
 * Objective Function
 A shelf of old circuits you can play. Each one is the circuit itself, solved sample by sample, with a measured error against a simulation of the same circuit, so "it sounds like the pedal" is a number and not a mood.
 
 The feeling: opening a schematic and hearing it an afternoon later, and trusting what you hear.
+
+It is made for one person's music production. It is public, and anyone who finds it is welcome to use it, but nobody else is the audience. If other people begin to add Circuits of their own, that changes, and this section gets rewritten.
 
 The bigger version: the pipeline from a published schematic to a validated plugin becomes cheap and routine enough that the catalog of 104 candidates is a queue, not a wish list, and what we learn on the way goes back upstream as patches.
 
@@ -18,14 +18,15 @@ Outcome: a set of Projects that each pass Full Validation at every Setting, plus
 ** Core goals
 1. Every Installed Plugin has passed Full Validation at every Setting.
 2. Each Project states its sources and every modeling assumption.
-3. Fixes that belong to the template go upstream, not into one Project.
+3. Fixes that belong to the template are collected as Upstream Patches. They are not sent yet.
 4. The cost of a Plugin (percent of one core at 48 kHz, stereo) is measured on an idle machine and stated.
 
 * Explicit Non-Goals
 - Matching measured hardware. Validation compares two simplified descriptions of one Circuit.
 - Effects with no Circuit: digital reverbs, firmware delays, "inspired by" sound design.
 - Faceplates, branded names, or anything that suggests endorsement.
-- Distributing binaries (open: see Open Questions).
+- Real-time cost. Offline-only is an acceptable end state for a Plugin. Making one cheaper is optional work, done when it is fun.
+- Serving other users: support, packaging, or compatibility for anyone but the maintainers.
 
 * Domain Model Glossary
 ** Modeling
@@ -134,11 +135,14 @@ Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =
 ** DONE Port the section-reset harness to msk011-drive
 
 * Open Questions
-- Who is this for: a personal shelf, or a public collection others install? Decides: Golem.
-- Is Offline-only an acceptable end state for a Plugin, or is real-time cost a goal? Decides: Golem.
-- Do Upstream Patches get sent to Somewhere Systems, and when? Decides: Golem.
-- Are binaries ever distributed? VST3 binaries built with nih-plug are GPLv3. Decides: Golem.
+- When do the Upstream Patches get sent to Somewhere Systems? Not yet; keep collecting. Decides: Golem.
+- Are binaries ever distributed? No objection and no plan. VST3 binaries built with nih-plug are GPLv3. Decides: Golem, when it comes up.
 - Why does green-overdrive fail at level 0 when the other two muted Settings pass? Decides: the build.
+
+* Settled Questions
+- 2026-11-17, Golem: the audience is one person's music production; the repository is public and others may use it.
+- 2026-11-17, Golem: Offline-only is acceptable. Real-time cost is not a goal.
+- 2026-11-17, Golem: Plugin, Project and Circuit are the terms; "filter" is avoided.
 
 * What We've Proven
 | Date | Result | Rerun |
