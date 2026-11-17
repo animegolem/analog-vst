@@ -10,8 +10,9 @@ redistributed here.
 Nothing was measured on hardware. Validation compares two simplified descriptions of one Circuit:
 the Netlist in `reference/circuit.cir`, simulated by ngspice, and the Model in `dsp/src/model.rs`.
 
-**Status: not yet validated.** No Full Validation has been run. The checks listed under
-"What was checked by hand" are short comparisons and prove nothing about the Project.
+**Status: all-PASS in a Full Validation** (2026-11-17, one Setting, first run, ngspice 45). See
+"Validation". Cost is about one core per stereo instance at 48 kHz, so treat the Plugin as
+Offline-only: bounce or freeze it. See "Cost".
 
 ## What it does to a signal
 
@@ -157,10 +158,44 @@ changes what three Checks mean, and makes two numbers in every report wrong.
 
 One: `default`. There is no Control to put at 0 or at 1, and none that mutes the output.
 
+## Validation
+
+Full Validation on 2026-11-17, ngspice 45, the full Pack (45 Sections, 76.6 s at 96 kHz), run once
+from an empty `validation/` directory. It passed on the first run; nothing was changed between
+authoring and validation. One Setting, so every value below is also the worst value.
+
+| Check | Result | Worst value | Limit | Worst case |
+|---|---|---|---|---|
+| frequency response | pass | 0.0307 dB | 0.1 | sweep at 0 dBFS |
+| static gain | pass | 0.00049 dB | 0.1 | 5000 Hz at 0 dBFS |
+| harmonics | pass | 0.0064 dB | 1 | H5 of 5000 Hz at 0 dBFS |
+| attack | pass | 0 | 0.05 | no gain change in either |
+| release | pass | 0 | 0.05 | no gain change in either |
+| intermodulation | pass | 0.0001 dB | 1 | -6 dBFS |
+| burst waveform null | pass | -112.8 dB | -40 | dB relative to reference |
+
+| Setting | Result |
+|---|---|
+| default | PASS |
+
+Read the table with "How the harness sees this Circuit" in mind:
+
+- Attack and release pass because neither capture shows a gain change. They test nothing here.
+- Frequency response and static gain compare the residue of the fundamental, not a gain.
+- As predicted, the report gives delay -1446 samples and polarity -1 for both the reference and
+  the Model. Both are wrong for this Circuit and identical on the two sides.
+- The frequency-response value (0.0307 dB) is larger than the hand measurement on a 1 s sweep
+  (0.013 dB). It is the Check with the least margin, and its worst case is the loudest sweep,
+  which fits folding of harmonics as the cause. That cause was not isolated in this run.
+- Outside the Checks: the two whole captures (all 45 Sections, 76.6 s) differ by -82.2 dB as a
+  plain waveform null with no alignment. The pink-noise Section is rendered but no Check reads it.
+
+Also on 2026-11-17: `cargo test` 10 passed, `(cd harness && uv run pytest -q)` 7 passed.
+
 ## What was checked by hand
 
-On 2026-11-17, with ngspice 45, through the harness's own section runner. One Setting exists, so
-the two operating conditions below stand in for "two Settings".
+Before the Full Validation, on 2026-11-17, with ngspice 45, through the harness's own section
+runner. One Setting exists, so the two operating conditions below stand in for "two Settings".
 
 | Quantity | Netlist (ngspice) | Model | Difference |
 |---|---|---|---|
@@ -185,10 +220,19 @@ A hand-made short signal set (`diagnostics/short_pack.py`: sync, two 1 s sweeps,
 
 ## Cost
 
-Not measured with the benchmark. The circuit rate is four times the template's, so expect a
-high cost. Rendering 10 s of stereo at 48 kHz took 9.3 s on a busy machine (load average 9),
-start-up included, which suggests about one core. Treat the Plugin as possibly Offline-only until
-the benchmark has been run on an idle machine.
+About one core per stereo instance at 48 kHz. Eight runs of the benchmark on 2026-11-17, one at a
+time, gave 90.4 % to 110.9 % of one core (90.4, 90.6, 90.7, 91.1, 95.9, 101.2, 101.2, 110.9). The
+machine was not idle: another program was using about 12 of its 16 cores and the load average was
+15 to 17, so the idle figure is probably near the low end and was not measured. Either way the
+Plugin is at the edge of one core. Treat it as Offline-only (bounce or freeze); it may play live
+on an idle machine with a large buffer, and that was not tried.
+
+The cost comes from the circuit rate of 2304 kHz, four times the template's, which the
+frequency-response Check needs (see "Changes to the template in this Project").
+
+```sh
+env CARGO_TARGET_DIR=$PWD/target cargo run -q --release --example bench -p dsp 48000
+```
 
 Untested: how the folded harmonics sound. The decimator is 120 dB down from fs - 20 kHz, so at a
 48 kHz session content between 24 kHz and 28 kHz folds into 20 kHz to 24 kHz.
