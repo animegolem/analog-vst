@@ -39,7 +39,7 @@ One second of a generated 48 kHz mono two-tone (440 Hz plus 5 kHz), rendered thr
 | msk011, local-tight reference | default | 7.4506e-9 | −140.56 |
 | msk011, local-tight reference | extreme | 5.9605e-8 | −142.50 |
 
-These two-tone checks are not a proof of equivalence for every signal or knob setting; they also do not include a separate comparison of new output to the inaccurate upstream msk011 solver. Full raw log and WAVs: `/Users/golem/.hermes/cache/scratch/solver-eval/` (scratch may be pruned).
+These two-tone checks are not a proof of equivalence for every signal or knob setting; they also do not include a separate comparison of new output to the inaccurate upstream msk011 solver. Full raw log and WAVs: `~/.hermes/cache/scratch/solver-eval/` (scratch may be pruned).
 
 ## Tests and SPICE
 

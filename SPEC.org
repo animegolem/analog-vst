@@ -123,7 +123,8 @@ Each Project is its own Cargo workspace with a full copy of the template, and al
 Frequency warping. The Circuit now runs at 672 kHz.
 ** DONE seven-band-eq: ngspice stops early on Section s007
 The op-amp subcircuit is rescaled (same gain, same pole).
-** TODO seven-band-eq: settle the slider value and range
+** DONE seven-band-eq: settle the slider value and range
+10 kΩ linear, from the kit seller's parts list. No component value changed. The range is set by fixed resistors.
 ** DONE Re-validate level 0 and volume 0 with section reset
 four-stage-fuzz and msk011-drive pass at 0 and now validate there. green-overdrive fails at level 0.
 ** TODO green-overdrive: find why level 0 fails (harmonics 11.2 dB, burst null -30.5 dB)
@@ -158,3 +159,6 @@ Section reset and the =CARGO_TARGET_DIR= fix are single-purpose and ready. See =
 | 2026-11-17 | seven-band-eq with the rescaled op-amp: all-PASS, 5 Settings. Worst frequency response 0.090 dB (=inverse=) | =cd seven-band-eq && rm -rf validation && ./validate.sh= |
 | 2026-11-17 | Loosening ngspice =abstol= to 1e-12 alone does not cure the EQ abort (it stops at 16 ms) | one Section, by hand |
 | 2026-11-17 | Triage catalog is consistent: 104 unique IDs | =python3 triage/verify_triage.py= |
+| 2026-11-17 | seven-band-eq fader: the kit seller's parts list names a 10 kΩ linear part (Alpha RA2045F-20R-15LC-B10K-C). The designer's files give no value | read the parts list linked in =seven-band-eq/README.md= |
+| 2026-11-17 | seven-band-eq per-band range in simulation: ±6.10 to ±6.83 dB with the other six centred; ceiling 7.96 dB from 2.7 kΩ against 1.8 kΩ. ±15 dB is not reachable with the published parts | =cd seven-band-eq && python3 measure_ac.py= |
+| 2026-11-17 | seven-band-eq after the header edit: all-PASS, 5 Settings. Worst frequency response 0.090 dB (=inverse=). Cost 25.7% (load average about 16) | =cd seven-band-eq && rm -rf validation && ./validate.sh= |
