@@ -8,9 +8,10 @@ The Circuit is a discrete amplifier: an NPN differential pair drives a PNP commo
 
 ## Status
 
-- Authored, not validated. `./validate.sh` has not been run, not even with `QUICK=1`. The plugin is not installed.
+- **Validated.** One Full Validation (not `QUICK`) on 2026-11-17 passed every Check at all four Settings on its first run, with ngspice 45. No Tolerance or Check was changed. The table is under Validation.
 - `cargo test` passes (14 tests) and `uv run pytest -q` in `harness/` passes (7 tests).
-- CPU cost is not benchmarked. A rough timing on a busy machine (5 s of stereo at 48 kHz rendered in 43 s) puts it near 860% of one core, so treat the Plugin as **Offline-only**: bounce or freeze, do not play live. Measure with `env CARGO_TARGET_DIR=$PWD/target cargo run -q --release --example bench -p dsp 48000` on an idle machine.
+- **CPU cost: 833% to 836% of one core per stereo instance at 48 kHz** (three runs of the bench: 836.0, 834.7, 832.9; load average about 6 to 7 at the time). The Plugin is **Offline-only**: bounce or freeze, do not play live. Measure on your machine with `env CARGO_TARGET_DIR=$PWD/target cargo run -q --release --example bench -p dsp 48000`.
+- Installed with `./install.sh` as VST3 and CLAP in the user plugin folders; both bundles pass `codesign -v`. Not loaded in a DAW.
 
 ## Control and levels
 
@@ -105,7 +106,7 @@ So this Plugin is about 0.2 dB brighter at 20 kHz than the same Circuit with com
 
 - **First PNP in the repository.** The Solver's PNP path had no test. Three were added in `dsp/src/circuit.rs` (mirror of the NPN, Jacobian against finite differences, a PNP stage's operating point), and `dsp/src/model.rs` checks this Circuit's operating point against ngspice: every node within 8 microvolts.
 - **Junction limiting.** The template's joint Newton solve stopped at 64 iterations without converging when the amplifier clipped hard, and the output then ran away (10^23 V, then NaN in the file). The solve now limits each junction's step as SPICE does and limits the extrapolated starting point the same way. A test drives a 5 V peak, 1 kHz sine at full drive, requires convergence on every sample, and asserts the clip levels against ngspice: +11.684 V, -10.755 V, 11.129 V RMS. In the renders counted so far (at 576 kHz) the solve took 2.3 iterations on average and 17 at most.
-- **Circuit rate 4.608 MHz** (the template runs at 576 kHz). At full drive the output transistor takes about half a microsecond to come out of cutoff, and that delay sets the even harmonics. At 576 kHz the second harmonic of a 5 kHz tone was up to 10.3 dB away from SPICE; at 4.608 MHz the worst harmonic error found by hand is 0.29 dB against a Tolerance of 1 dB. This is why the Plugin costs so much.
+- **Circuit rate 4.608 MHz** (the template runs at 576 kHz). At full drive the output transistor takes about half a microsecond to come out of cutoff, and that delay sets the even harmonics. At 576 kHz the second harmonic of a 5 kHz tone was up to 10.3 dB away from SPICE; at 4.608 MHz the worst harmonic error is 0.29 dB by hand and 0.28 dB in the Full Validation (H4 of 5 kHz at 0 dBFS), against a Tolerance of 1 dB. This is why the Plugin costs so much.
 - **Remaining edge-timing difference.** At full drive and full-scale input the Model's clipped edges still differ from SPICE by a fraction of a microsecond at high frequencies. Whole-tone waveform difference, by hand: -56 dB at 1 kHz, -42 dB at 5 kHz, -31 dB at 10 kHz, -24 dB at 20 kHz. Gain and harmonics agree at all of them.
 
 ## Validation
@@ -118,7 +119,34 @@ rm -rf validation && ./validate.sh
 
 Each Section is rendered from a fresh DC state, as SPICE does. Delete `validation/` when switching between `QUICK=1` and a full run: the Pack is cached without regard to the mode.
 
-Checked by hand so far, on short signals, Model against ngspice 45:
+Full Validation of 2026-11-17, the worst value of each Check over the four Settings. All 28 Checks passed.
+
+| Check | Worst value | Tolerance | Setting and case |
+|---|---|---|---|
+| Frequency response | 0.0164 dB | 0.1 dB | drive_max, sweep at 0 dBFS |
+| Static gain | 0.00043 dB | 0.1 dB | drive_min, 5000 Hz at -36 dBFS |
+| Harmonics | 0.3515 dB | 1 dB | drive_low, H2 of 5000 Hz at -40 dBFS |
+| Attack | 0 | 0.05 | default and drive_max: reference and Model agree (0.09 ms and 0.17 ms) |
+| Release | 0 | 0.05 | default and drive_max: reference and Model agree (0.84 ms and 0.65 ms) |
+| Intermodulation | 0.0110 dB | 1 dB | drive_low, -20 dBFS |
+| Burst waveform null | -71.72 dB | -40 dB | drive_max |
+
+Per Setting:
+
+| Setting | Frequency response | Static gain | Harmonics | Intermodulation | Burst null |
+|---|---|---|---|---|---|
+| default | 0.0012 dB | 0.00039 dB | 0.1876 dB | 0.0017 dB | -93.08 dB |
+| drive_min | 0.0069 dB | 0.00043 dB | 0.00043 dB | 0 | -78.38 dB |
+| drive_low | 0.00065 dB | 0.00029 dB | 0.3515 dB | 0.0110 dB | -100.3 dB |
+| drive_max | 0.0164 dB | 0.00031 dB | 0.2755 dB | 0.000026 dB | -71.72 dB |
+
+What the table does not show:
+
+- **drive_min is a weak test of distortion.** The output is muted there, so every distortion product is under the Check's floor in both descriptions. Its harmonics value is the fundamental's gain error and its intermodulation value is 0 with no case named. The Setting does test gain, frequency response and the burst null at a muted output.
+- **Attack and release** report "no gain change in either" at drive_min and drive_low. The Circuit has no envelope detector, so these Checks only confirm that neither description invents one.
+- The burst null Check is at 1 kHz. At full drive and full-scale input the waveform difference grows with frequency (see Solver notes).
+
+Checked by hand before validation, on short signals, Model against ngspice 45:
 
 | Quantity | Setting | Model | ngspice |
 |---|---|---|---|
@@ -139,7 +167,7 @@ cd harness && uv run pytest -q
 ./install.sh
 ```
 
-`validate.sh` and `install.sh` force `CARGO_TARGET_DIR=$PWD/target` themselves. Install only after every Setting passes a full validation.
+`validate.sh` and `install.sh` force `CARGO_TARGET_DIR=$PWD/target` themselves. Install only after every Setting passes a full validation. A full validation of the four Settings took about 30 minutes here.
 
 ## Rights
 
