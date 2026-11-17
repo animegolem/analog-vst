@@ -4,11 +4,11 @@ A stereo plugin modeled after the Tonemender circuit by runoffgroove.com (v1.0, 
 
 **Nothing was measured on hardware.** Validation compares the Rust model with an ngspice simulation of the same simplified circuit. The source page publishes no frequency-response curves, so there is no measured response to compare the transcription against either.
 
-**Status: every setting passes a Full Validation** (2026-11-17, ngspice 45, the second of two runs; the first failed, see "Validation"). Cost: 9.4% of one core per stereo instance at 48 kHz.
+**Status: every setting passes a Full Validation** (2026-11-17, ngspice 45, the third of three runs; the first failed, see "Validation"). Cost: 9.5% of one core per stereo instance at 48 kHz. The model has no rail clipping: some inputs below full scale would clip in the hardware and pass cleanly here, see "Op-amp output check".
 
 ## Validation
 
-Full Validation, 45 sections at 96 kHz, six settings, all PASS. Worst value of each check over the six settings:
+Full Validation, 45 sections at 96 kHz, six settings, all PASS. These numbers are from the third run, made from an empty `validation/` directory with SPICE simulated again at all six settings, after a comment-only edit to the netlist changed its checksum. Every reported value is the same as in the second run. Worst value of each check over the six settings:
 
 | Check | Worst value | Limit | Where |
 |---|---|---|---|
@@ -39,7 +39,7 @@ How to read it:
 
 **The first Full Validation failed** the intermodulation check at two settings: `all_min` (1.398 dB at -6 dBFS) and `treble_level_min` (6.101 dB at -20 dBFS). The other four settings passed. The sidebands were in the SPICE reference, not in the model: see "Two fixes to the SPICE runner". No tolerance and no check was changed between the runs, and no setting was dropped.
 
-Cost: `cargo run --release --example bench -p dsp 48000` reports 9.4% of one core per stereo instance at 48 kHz, measured once with nothing else validating.
+Cost: `cargo run --release --example bench -p dsp 48000` reports 9.5% of one core per stereo instance at 48 kHz. Measured once, after the third run, with no other validation running; the machine was not idle (1-minute load average 15.58, just after the validation and the tests ended). The same command reported 9.4% after the second run.
 
 ## Sources and rights
 
