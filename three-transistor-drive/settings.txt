@@ -1,0 +1,7 @@
+# Knob settings to validate: a name, then control=rotation pairs (0 = fully counter-clockwise,
+# 1 = fully clockwise). The one control at both ends, its default, and a low point where the
+# amplifier is not clipping all the time. drive=0 mutes the output (wiper 1 ohm from ground).
+default
+drive_min drive=0
+drive_low drive=0.1
+drive_max drive=1
