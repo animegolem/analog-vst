@@ -133,3 +133,22 @@ def test_spice_section_starts_from_silence(tmp_path):
     y = spice.render(netlist, stim, manifest, {}, jobs=1)
     section = slice(len(gap), len(gap) + len(tone))
     assert abs(np.mean(y[section] - stim[section])) < 2e-5
+
+
+def test_spice_reference_of_a_linear_circuit_has_no_intermodulation(tmp_path):
+    """A weak 7 kHz tone on a strong 60 Hz tone through an RC low-pass comes out without sidebands.
+
+    The circuit is linear, so any sideband is the reference's own error. With a maximum step of a
+    quarter of the oversampled period this measured -84.7 dBc; with a sixteenth, -110.1 dBc.
+    """
+    netlist = tmp_path / "rc.cir"
+    netlist.write_text("* RC\n$SOURCE\nR1 in out 10k\nC1 out 0 100n\n$ANALYSIS\n.end\n")
+    lf, hf = signals.IMD_FREQS
+    x = 0.8 * signals.tone(FS, lf, 0.5, 0) + 0.2 * signals.tone(FS, hf, 0.5, 0)
+    x = 0.007 * x / np.max(np.abs(x))
+    gap = np.zeros(FS // 10)
+    stim = np.concatenate([gap, x, gap])
+    section = {"kind": "imd", "start": len(gap), "length": len(x), "freqs": [lf, hf], "level_db": -20}
+    y = spice.render(netlist, stim, {"sample_rate": FS, "sections": [section]}, {}, jobs=1)
+    imd_db = analysis.imd(y, section, FS)["imd_db"]
+    assert imd_db < -105, imd_db

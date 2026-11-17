@@ -18,6 +18,12 @@ import numpy as np
 from scipy import signal as sps
 
 OVERSAMPLE = 4
+# ngspice's maximum step is the oversampled period divided by this. At 4, a linear circuit's
+# reference showed sidebands around a weak 7 kHz tone riding on a strong 60 Hz tone (-83.9 dBc
+# where the Model, and theory, have none); they move with reltol but do not go away (-83.6 dBc at
+# 1e-7, -88.6 at 1e-8). At 8 they read -91.0 dBc; at 16 the reference agrees with the Model on
+# every sideband to three digits. SPICE takes about 3.5 times as long as at 4.
+MAX_STEP_DIVISOR = 16
 SECTION_TIMEOUT_S = 900
 NOISE_FLOOR_V = 1e-9
 PASSBAND_HZ = 20_000
@@ -106,10 +112,10 @@ def run_section(template: Template, params: dict, x: np.ndarray, rate: int, work
         params,
         SOURCE=f'A_IN %v([in]) insrc\n.model insrc filesource (file="{src}" amploffset=[0] amplscale=[1] '
         "timeoffset=0 timescale=1 timerelative=false amplstep=false)",
-        # Tight tolerances and a quarter-sample maximum step keep output interpolation error
-        # below 0.002 dB at 20 kHz.
+        # Tight tolerances and a small maximum step keep output interpolation error below
+        # 0.002 dB at 20 kHz.
         ANALYSIS=".options interp reltol=1e-6 abstol=1e-15 vntol=1e-9 itl1=2000 itl6=1000\n.save v(out)\n"
-        f".tran {step:.12e} {(len(x) - 1) * step:.12e} 0 {step / 4:.12e}\n"
+        f".tran {step:.12e} {(len(x) - 1) * step:.12e} 0 {step / MAX_STEP_DIVISOR:.12e}\n"
         f".control\nset noaskquit\nset filetype=binary\nrun\nwrite {raw} v(out)\nquit\n.endc",
     )
     cir.write_text(netlist)
