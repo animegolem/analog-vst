@@ -38,7 +38,8 @@ def align(stimulus: np.ndarray, capture: np.ndarray, manifest: dict) -> tuple[np
 
 def place(stimulus: np.ndarray, capture: np.ndarray, manifest: dict, alignment: str) -> tuple[np.ndarray, int, int]:
     """The capture on the stimulus's time axis with positive polarity, and the delay and polarity used."""
-    assert alignment in ALIGNMENTS, f"alignment must be one of {ALIGNMENTS}, not {alignment!r}"
+    if alignment not in ALIGNMENTS:
+        raise ValueError(f"alignment must be one of {ALIGNMENTS}, not {alignment!r}")
     if alignment == CHIRP:
         aligned, delay, polarity = align(stimulus, capture, manifest)
         return aligned * polarity, delay, polarity

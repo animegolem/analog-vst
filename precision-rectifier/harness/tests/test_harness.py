@@ -134,7 +134,7 @@ def test_alignment_is_a_stated_choice(pack):
     stim, manifest = pack
     with pytest.raises(TypeError):
         analysis.analyze(stim, stim, manifest)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         analysis.analyze(stim, stim, manifest, "auto")
     # A capture that is not on the pack's time axis cannot be called aligned.
     with pytest.raises(ValueError):
