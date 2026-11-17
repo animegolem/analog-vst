@@ -1,0 +1,78 @@
+* Three-Transistor Drive: reduced one-input, one-output discrete amplifier stage.
+* SPICE reference for dsp/src/model.rs. Keep the two in step: same parts, values and pot formula.
+* Modeled after the Music Thing Modular Mini Drive Rev 1 circuit, designed by Tom Whitwell.
+* Component facts transcribed by reading the published drawing; no schematic is copied.
+* Source: https://www.musicthing.co.uk/collateral/mini_drive_Rev1_Schematic.pdf
+* (one page, title block "Mini Drive Rev 1 ... March 2020", 15/10/2021, sheet 1/2).
+* Values read from that page: R15 68k R16 68k R17 1M VR1 "A1M" R1 1k C3 100n
+* R2 100k; Q5Q1/Q5Q2 MBT6429DW1T1G; R3 100k R4 27k C4 100p R5 100R; Q2 MMBT3906;
+* R6 1k R7 200k R8 1k C6 220u C5 10p R9 10k C7 1u.
+*
+* Configuration: cable in IN_HIGH only. IN_LOW is unpatched, so its switch
+* contact joins its tip to the IN_HIGH tip and R15 is in parallel with R16.
+* The IN_HIGH switch contact (to ground) is open. One of the two paralleled
+* output jacks is loaded; the other is unpatched and adds nothing.
+*
+* Control: DRIVE = wiper position of VR1 as a fraction of its 1M track, 0 to 1.
+* Placeholders (dollar-prefixed names) are filled by the harness: SOURCE and ANALYSIS
+* by the runner, DRIVE with the physical value from the model.
+*
+* ASSUMED: VR1 is an audio (log) taper ("A" prefix); clockwise raises the wiper.
+* ASSUMED (not on the drawing): RS 1k source, RLOAD 100k load, VCC/VEE ideal +/-12 V.
+* 0 dBFS = 5 V peak at the input. The output exceeds full scale at high drive.
+* OMITTED: lamp LAMP1 and its driver R10 Q1Q1 C8 R11 R12 Q4 R13 Q1Q2 R14 (the
+* driver hangs on node "a" through R10 10k); supply diodes D1/D2 (1N5819) and
+* C1/C2 22u; capacitor ESR and leakage; noise; temperature.
+*
+* Q5Q1/Q5Q2: no vendor SPICE model was found for the MBT6429DW1T1G. ASSUMED equal
+* to the Fairchild 2N5088 model (https://www.onsemi.com/pdf/datasheet/2n5088-d.pdf,
+* "Spice Model"), reduced. The two halves are identical.
+* Q2: Fairchild 2N3906/MMBT3906/PZT3906 model (1997 datasheet, "Spice Model"), reduced.
+* Reduced = only IS BF BR VAF IKF RB RC RE kept; RE is the SPICE default 0.
+* Dropped from the NPN: ISE/NE leakage and all charge storage (CJE CJC TF TR).
+* Dropped from the PNP: charge storage only (its published ISE and ISC are 0).
+* Neither SPICE's transistor model nor the solver has emitter-base reverse
+* breakdown. If the hardware's Q1Q1 breaks down (rating 6 V minimum), the omitted
+* lamp driver limits the negative swing of node "a"; this netlist does not show that.
+*
+* Operating point (ngspice 45, input 0 V, any DRIVE): a 36.9mV, c1 11.301V,
+* e -0.576V, out 0V; Q5Q1 30.1uA, Q5Q2 84.1uA, Q2 1.204mA, all forward-active.
+* See README.md for sources, every assumption and the measured size of each omission.
+
+.model QN6429 NPN(IS=5.911f BF=1122 BR=1.271 VAF=62.37 IKF=14.92m RB=10 RC=1.61 RE=0)
+.model QP3906 PNP(IS=1.41f BF=180.7 BR=4.977 VAF=18.7 IKF=80m RB=10 RC=2.5 RE=0)
+
+VCC vp 0 DC 12
+VEE vn 0 DC -12
+
+$SOURCE
+RS in jh 1k
+R17 jh 0 1meg
+R15 jh pt 68k
+R16 jh pt 68k
+RDRIVE1 pt w {max(1meg * (1 - $DRIVE), 1)}
+RDRIVE2 w 0 {max(1meg * $DRIVE, 1)}
+R1 w ci 1k
+C3 ci b1 100n
+R2 b1 0 100k
+
+Q5Q1 c1 b1 e QN6429
+Q5Q2 vp b2 e QN6429
+R3 e vn 100k
+R4 vp c1 27k
+C4 vp cz 100p
+R5 cz c1 100
+Q2 a c1 vp QP3906
+R9 a vn 10k
+
+C5 b2 a 10p
+R6 b2 fb 1k
+R7 fb a 200k
+R8 fb cf 1k
+C6 cf 0 220u
+
+C7 a out 1u
+RLOAD out 0 100k
+
+$ANALYSIS
+.end
