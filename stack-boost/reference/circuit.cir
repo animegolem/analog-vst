@@ -25,8 +25,10 @@
 *    current, no input capacitance), zero output impedance, no rail clipping, no slew limit, no
 *    common-mode limit, no noise. The level control reaches 1 + 500k/4.7k = 107 V/V, so the real
 *    circuit clips at its rails (about 0.1 V and 8.9 V) long before this model does: valid only
-*    while both op-amp outputs stay inside the rails. 0 dBFS = 0.07 V peak at the input keeps
-*    them inside at the largest-gain control position found (see README.md).
+*    while both op-amp outputs stay inside the rails. 0 dBFS = 0.07 V peak at the input kept
+*    them inside for the single sines and the burst tested at the largest-gain control position
+*    found. That is not a bound: an input below 0.07 V peak that is not a single sine can
+*    exceed the rails, where the hardware would clip and this model does not (see README.md).
 *  - Controls: BASS = R8 500k audio, as a variable resistor (lugs 3 and 2 tied), ohms.
 *    MID = R9 100k audio, variable resistor to Vref, in parallel with R10, ohms.
 *    TREBLE = R7 500k linear, as a divider, 0 to 1 (1 = wiper at lug 3, the capacitor end).

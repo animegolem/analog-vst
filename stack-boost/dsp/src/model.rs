@@ -13,10 +13,13 @@ pub const CLAP_ID: &str = "local.analog-to-vst.three-band-stack-boost";
 pub const VST3_ID: [u8; 16] = *b"ThreeBandStkBst1";
 
 /// Volts at the jacks for a full-scale (0 dBFS) sample. Op-amp rail clipping isn't modeled, and
-/// the gain stage reaches 107 V/V, so full scale is set where the second op-amp's output stays
-/// inside its 0 to 9 V rails at the largest-gain control position found (54.4 V/V at 5 kHz:
-/// 0.07 V peak in gives 3.81 V peak around the 4.5 V bias). The circuit is linear, so this number
-/// does not change the sound; a hotter input passes cleanly where the hardware would clip.
+/// the gain stage reaches 107 V/V, so full scale is set where a single full-scale sine keeps the
+/// second op-amp's output inside its 0 to 9 V rails at the largest-gain control position found
+/// (54.4 V/V at 5 kHz: 0.07 V peak in gives 3.81 V peak around the 4.5 V bias). That is a result
+/// for the sines and the burst tested, not a bound: an input below full scale that is not a
+/// single sine can exceed the rails (README.md, "Op-amp output check"). The circuit is linear,
+/// so this number does not change the sound; any input that would take an op-amp output past a
+/// rail passes cleanly where the hardware would clip.
 pub const VOLTS_PER_FULL_SCALE: f64 = 0.07;
 
 /// Typical 25 C values for the op-amp the designer suggests first; see the netlist header [S4].

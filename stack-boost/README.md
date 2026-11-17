@@ -95,8 +95,8 @@ Each of these is a choice, not a fact from the sources.
 |---|---|
 | Mid Shift switch (SW1), fixed at HI (open). The LO position is not modeled | With the controls at mid rotation the mid dip is at 646 Hz as modeled and would be at 380 Hz in LO (ngspice AC). The page says "around 700Hz" and "400Hz" |
 | C4 (220 pF) in series with C5 (150 pF), and C7 (33 nF) in series with C8 (22 nF), each written as one capacitor: 89.189189 pF and 13.2 nF | At most 5.3e-06 dB from 20 Hz to 20 kHz over 11 control positions, against the two-capacitor form with 1e12 Ω across each open switch pole (ngspice AC) |
-| Op-amp rail clipping | Not measured as an error: the model is honest only while both op-amp outputs stay inside the rails. A hotter input passes cleanly where the hardware would clip |
-| Op-amp slew limit | Inside the full-scale range the largest slew needed is about 0.23 V/µs (1.81 V peak at 20 kHz), against 3.6 V/µs typical in S4 |
+| Op-amp rail clipping | Not measured as an error: the model is honest only while both op-amp outputs stay inside the rails. Any input that would take an output past a rail passes cleanly where the hardware would clip. That includes some inputs below full scale: see "Op-amp output check" |
+| Op-amp slew limit | Not measured as an error. An estimate for a single full-scale sine at the largest-gain position found: about 0.23 V/µs (1.81 V peak at 20 kHz), against 3.6 V/µs typical in S4. It is not a bound for other waveforms |
 | Op-amp input bias current, input capacitance, common-mode limit, output impedance, noise | Not measured. S4 gives 1 pA typical bias current |
 | Op-amp supply current through R1 | Not measured. S4 gives 3 mA maximum, which would lower +V by up to 0.3 V and Vref by 0.15 V. That changes headroom, not the linear response |
 | The other op-amps the designer allows | At maximum level the response at 20 kHz moves by up to 1.7 dB among the three types (21.8 dB with the values used, 23.5 dB with gain 1e5 and 10 MHz). At mid level it moves by 0.2 dB (ngspice AC) |
@@ -115,7 +115,11 @@ With 0 dBFS = 0.07 V peak:
 - A 0 dBFS, 5 kHz burst through the harness's SPICE runner peaks at 3.91 V at the output, around the 4.498 V bias.
 - S4 gives a typical output swing to 0.07 V below the positive rail and 0.09 V above the negative rail at light load.
 
-These are spot checks with sines. They do not bound the output for arbitrary input. The circuit is linear, so the full-scale voltage does not change the sound: it states the input level below which the real circuit would not clip at any control position searched.
+These are spot checks with single sines and one tone burst. They do not bound the output for other input, and full scale is not a level below which the circuit cannot clip. An input that never exceeds 0.07 V peak but is not a single sine can take the second op-amp past its rails:
+
+- At the same position, a sum of 20 harmonics of 1 kHz (1 kHz to 20 kHz), with phases chosen to add at that op-amp's output, faded in from zero over 2 ms and peaking at 0.06999 V, takes the second op-amp's output from 0.605 V to 9.470 V in the simplified circuit: above the 9 V supply (ngspice transient, 20 ms, 50 ns maximum step). The first op-amp's output stays within 4.427 V to 4.568 V. A sine's peak output is set by the gain at one frequency; this waveform's is set by the gains at all 20 frequencies together.
+
+The hardware would clip on such an input; the model does not, and the validation does not test it. The circuit is linear, so the full-scale voltage does not change the sound. It only sets which tested signals stay inside the rails: single sines and the burst above, at the control positions searched.
 
 ## Checks made by hand
 
