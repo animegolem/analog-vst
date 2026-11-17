@@ -19,4 +19,22 @@ With one slider varied and all others centered, ngspice AC analysis relative to 
 
 ## Tests
 
-A full validation passes at all 5 settings (2026-11-17; worst frequency response 0.090 dB). A later benchmark with nothing else validating measured 25.9% of one core. The circuit is linear: no modeled harmonics or compression, but validation of linear frequency/phase accuracy is still necessary. CPU measured 81.7% of one core per stereo instance at 48 kHz (machine load may affect this). Use DAW plugin rescan after installation.
+Full validation, 2026-11-17, after the netlist header edit (all five SPICE references simulated again with ngspice 45, full 45-section pack): PASS at all 5 settings. Worst value of each check across the settings:
+
+| Check | Worst value | Limit | Setting |
+|---|---|---|---|
+| frequency response | 0.090 dB | 0.1 dB | `inverse`, sweep at -12 dBFS |
+| static gain | 0.0078 dB | 0.1 dB | `alternating`, 5000 Hz at 0 dBFS |
+| harmonics | 0 | 1 dB | all (no harmonics in either) |
+| attack | 0 | 0.05 | all (no gain change in either) |
+| release | 0 | 0.05 | all (no gain change in either) |
+| intermodulation | 0 | 1 dB | all |
+| burst waveform null | -89.06 dB | -40 dB | `allmin` |
+
+Frequency response per setting: `default` 0.056, `allmax` 0.045, `allmin` 0.073, `alternating` 0.037, `inverse` 0.090 dB. The `inverse` margin is thin (0.090 against 0.1); the cause was not isolated in this run. Rerun: `rm -rf validation && ./validate.sh`.
+
+`cargo test` (9 passed) and `uv run pytest -q` in `harness/` (7 passed) pass.
+
+Cost: 25.7% of one core per stereo instance at 48 kHz (`cargo run -q --release --example bench -p dsp 48000`, one run, no other validation or benchmark running, load average about 16 on 16 cores). An earlier run alone measured 25.9%; a run taken while other validations were going measured 81.7% and is not a fair figure.
+
+The circuit is linear: there are no modeled harmonics or compression, so those checks pass trivially, and the frequency response, static gain and burst null carry the comparison. Use DAW plugin rescan after installation.
