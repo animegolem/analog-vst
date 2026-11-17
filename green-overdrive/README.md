@@ -22,3 +22,43 @@ What is left is the simulator's own resolution. Runs from 1e-7 to 1e-9, with the
 | 1e-9 | 1/4 sample | 0.24 dB | 0.31 dB |
 
 These are single-Section runs through the harness's own code, not a Full Validation.
+
+## Validation
+
+Full Validation of 2026-11-17 (`rm -rf validation && ./validate.sh`, ngspice 45, 96 kHz pack, all four references simulated again with the pre-roll and reltol=1e-7): PASS at every Setting in `settings.txt`.
+
+| Setting | Controls | Result |
+|---|---|---|
+| default | defaults | PASS |
+| min-drive-tone | drive=0 tone=0 level=1 | PASS |
+| max-drive-tone | drive=1 tone=1 level=1 | PASS |
+| level-zero | level=0 | PASS |
+
+Worst value of each Check over the four Settings:
+
+| Check | Worst value | Tolerance | Where |
+|---|---|---|---|
+| frequency response | 0.061 dB | 0.1 dB | max-drive-tone, sweep at -40 dBFS |
+| static gain | 0.0026 dB | 0.1 dB | default, 5 kHz at -4 dBFS |
+| harmonics | 0.485 dB | 1 dB | level-zero, H3 of 5 kHz at -36 dBFS |
+| attack | 0 ms | 0.05 ms | every Setting |
+| release | 0 ms | 0.05 ms | every Setting |
+| intermodulation | 0.0096 dB | 1 dB | level-zero, -20 dBFS |
+| burst waveform null | -80.02 dB | -40 dB | max-drive-tone |
+
+At level-zero alone: frequency response 0.046 dB, static gain 0.0026 dB, harmonics 0.485 dB, intermodulation 0.0096 dB, burst waveform null -93.06 dB. The level-zero harmonics value is one run against one reference; the table in the section above shows how far that reading can move with the simulator's settings.
+
+Cost: 30.8% of one core per stereo instance at 48 kHz (`cargo run -q --release --example bench -p dsp 48000`, one trial on an Apple M3 Max with nothing else running). The Circuit runs at 576 kHz or above.
+
+## Assumptions
+
+`reference/circuit.cir` lists them with the sources. In short:
+
+- Effect-on signal path only; the electronic bypass and its switching parts are not modeled.
+- Transistors use a reduced DC Gummel-Poon model (no junction charge, transit time or leakage), the same in the Model and the Netlist.
+- The clipping diodes use the template's small-signal diode model, with no reverse breakdown.
+- Each op-amp half is a single pole with 100 dB gain and 3 MHz gain-bandwidth, with no rail clipping or slew limit. A spot check with ngspice at maximum drive kept the op-amp outputs between 3.83 and 5.14 V on a 9 V supply.
+- The Tone pot is taken as linear and the Level pot as audio taper.
+- Ideal 9 V supply, ideal voltage input, 1 M load; 0 dBFS is 0.2 V peak.
+- Capacitor series resistance, noise and thermal drift are omitted.
+- The rest-state pin in the Solver lasts until a Control moves; after that the output can drift to about -120 dBFS with no input. Validation does not exercise a Control change.
