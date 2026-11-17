@@ -128,3 +128,29 @@ def test_spice_refuses_a_section_with_no_silence_before_it(tmp_path):
         manifest = {"sample_rate": FS, "sections": [{"kind": "step", "start": len(before), "length": len(tone)}]}
         with pytest.raises(AssertionError, match=reason):
             spice.render(netlist, stim, manifest, {}, jobs=1)
+
+
+@pytest.mark.parametrize("fs", [44_100, 48_000, 88_200, 96_000, 192_000])
+def test_spice_accepts_silence_before_a_section_at_every_rate(fs, tmp_path, monkeypatch):
+    """The upsampling filter's own ring before a section is not a signal still playing.
+
+    At 44.1 kHz the ring is 168 upsampled samples. ngspice is replaced by a wire, so what comes back is
+    what each run was given, less its pre-roll.
+    """
+    monkeypatch.setattr(spice, "run_section", lambda template, params, x, rate, work, name: x.copy())
+    netlist = tmp_path / "wire.cir"
+    netlist.write_text("* wire\n$SOURCE\n$ANALYSIS\n.end\n")
+    gap = np.zeros(fs // 2)
+    tone = signals.tone(fs, 5000, 0.1, -16)
+    stim = np.concatenate([gap, tone, gap])
+    manifest = {"sample_rate": fs, "sections": [{"kind": "step", "start": len(gap), "length": len(tone)}]}
+    y = spice.render(netlist, stim, manifest, {}, jobs=1)
+
+    a = len(gap) * spice.OVERSAMPLE
+    up = spice.upsample(stim, fs)
+    assert up[a - spice.onset_ring(fs) : a].any(), "the onset rings before the section"
+    assert not up[: a - spice.onset_ring(fs)].any(), "and no earlier than the filter's half-length"
+    assert spice.preroll(fs) >= spice.onset_ring(fs) + spice.REST
+    expected = np.zeros_like(up)
+    expected[a:] = up[a:]
+    assert np.array_equal(y, spice.downsample(expected, fs))

@@ -14,6 +14,23 @@
 /// Conductance standing in for an inductor at DC.
 const INDUCTOR_DC_SHORT: f64 = 1e9;
 
+/// Largest last Newton step, in volts, at which the DC operating point counts as converged. Newton
+/// converges quadratically, so the error left after a step this size is about
+/// step^2 / (2 Vt) = 2e-13 V. The step cannot be asked to reach zero: the DC equations are
+/// evaluated in double precision, and the steps can stop shrinking first. Measured on the Green
+/// Diode Overdrive Model over 125 combinations of its Controls (each at 0, 0.1, 0.5, 0.9 and 1):
+/// the last step was at most 1.8e-9 V, never under the 1e-12 V at which the loop stops early.
+/// With that Model's 0.001 ohm emitter resistances set to 1 ohm, one combination tried, the last
+/// step was 6e-13 V.
+const MAX_DC_STEP: f64 = 1e-7;
+
+/// Largest `dc_residual` at which the operating point counts as a solution of the DC equations.
+/// Measured over the same 125 combinations: at most 2.0e-16, the same at 44.1, 48, 96 and 192 kHz
+/// (the DC equations do not contain the sample rate). An operating point solved with 1e-13 A too
+/// much flowing into that Model's bias node, 0.5 nV off, measures 2.8e-11; with 100 nA, 0.5 mV off,
+/// it measures 2.8e-5.
+const MAX_DC_RESIDUAL: f64 = 1e-12;
+
 /// Node index; 0 is ground.
 pub type Node = usize;
 
@@ -334,7 +351,7 @@ impl Circuit {
             v_prev: vec![0.0; nn],
             i_used: vec![0.0; nn],
             i_prev: vec![0.0; nn],
-            operating_point: vec![0.0; nodes],
+            operating_point: vec![0.0; size],
             caps,
             ports,
             devices,
@@ -342,7 +359,11 @@ impl Circuit {
         };
         circuit.update();
         circuit.order_devices();
-        circuit.solve_operating_point();
+        let last_step = circuit.solve_operating_point();
+        assert!(
+            last_step < MAX_DC_STEP,
+            "the DC operating point did not converge: the last Newton step was {last_step} V"
+        );
         circuit.pin_operating_point();
         circuit
     }
@@ -359,7 +380,8 @@ impl Circuit {
         }
     }
 
-    /// Node voltages at the DC operating point found at construction (index = node - 1).
+    /// The DC operating point found at construction: node voltages (index = node - 1), then the
+    /// current of each voltage source.
     #[cfg(test)]
     pub fn operating_point(&self) -> &[f64] {
         &self.operating_point
@@ -524,7 +546,11 @@ impl Circuit {
 
     /// SPICE-style DC operating point: Newton on the full nodal equations with capacitors open,
     /// stepping the DC sources up from zero. Sets the capacitor states and port voltages.
-    fn solve_operating_point(&mut self) {
+    ///
+    /// Returns the size of the last Newton step with the sources at full value (volts at nodes,
+    /// amperes in voltage sources), or infinity if that step was damped. The caller decides whether
+    /// that is converged; the point is wherever the last step left it.
+    fn solve_operating_point(&mut self) -> f64 {
         let n = self.size;
         self.stamp_all(true);
         let s_dc = self.s.clone();
@@ -535,6 +561,7 @@ impl Circuit {
         let mut residual = vec![0.0; n];
         let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
         let port_voltage = |z: &[f64], (a, b): (Node, Node)| node_val(z, a) - node_val(z, b);
+        let mut last_step = f64::INFINITY;
         for step in 1..=20 {
             let lambda = step as f64 / 20.0;
             for _ in 0..200 {
@@ -578,12 +605,17 @@ impl Circuit {
                 for (zi, d) in z.iter_mut().zip(&delta) {
                     *zi -= damp * d;
                 }
-                if damp == 1.0 && delta.iter().all(|d| d.abs() < 1e-12) {
+                // A NaN anywhere makes the step NaN, which is under no bound.
+                let step_size = delta
+                    .iter()
+                    .fold(0.0, |m: f64, d| if d.abs() > m || d.is_nan() { d.abs() } else { m });
+                last_step = if damp == 1.0 { step_size } else { f64::INFINITY };
+                if last_step < 1e-12 {
                     break;
                 }
             }
         }
-        self.operating_point.copy_from_slice(&z[..self.nodes]);
+        self.operating_point.copy_from_slice(&z);
         for (k, &(a, b, g)) in self.caps.iter().enumerate() {
             let v = node_val(&z, a) - node_val(&z, b);
             // Steady state: no capacitor current (x = g v); inductor current i = g v - x carries the
@@ -605,6 +637,62 @@ impl Circuit {
             self.z[base + first..base + first + np].copy_from_slice(&i[..np]);
             self.i_prev[first..first + np].copy_from_slice(&i[..np]);
         }
+        last_step
+    }
+
+    /// How far the stored operating point is from solving the DC equations of the netlist as it is
+    /// now: the worst row's residual over the sum of the magnitudes of that row's terms. A node's
+    /// row is Kirchhoff's current law (amperes over amperes), a source's row its voltage (volts
+    /// over volts). Rounding alone leaves about 1e-16.
+    ///
+    /// It shares the element stamps and device equations with `solve_operating_point` and nothing
+    /// else: the matrix is stamped again from the elements, and the equations are evaluated at the
+    /// point Newton stopped on, which Newton itself never does. A wrong stamp or device equation
+    /// is therefore not caught here; the comparison with the SPICE reference catches that.
+    fn dc_residual(&mut self) -> f64 {
+        self.stamp_all(true);
+        let n = self.size;
+        let z = &self.operating_point;
+        let (mut residual, mut terms) = (vec![0.0; n], vec![0.0; n]);
+        for r in 0..n {
+            let rhs = self.dc_rhs(r);
+            residual[r] = -rhs;
+            terms[r] = rhs.abs();
+            for c in 0..n {
+                let t = self.s.at(r, c) * z[c];
+                residual[r] += t;
+                terms[r] += t.abs();
+            }
+        }
+        let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
+        for &(dev, first) in &self.devices {
+            let np = dev.ports();
+            let mut v = [0.0; 2];
+            for k in 0..np {
+                let (a, b) = self.ports[first + k];
+                v[k] = node_val(z, a) - node_val(z, b);
+            }
+            dev.eval(&v[..np], &mut i, &mut j);
+            for k in 0..np {
+                let (a, b) = self.ports[first + k];
+                add_node(&mut residual, a, i[k]);
+                add_node(&mut residual, b, -i[k]);
+                add_node(&mut terms, a, i[k].abs());
+                add_node(&mut terms, b, i[k].abs());
+            }
+        }
+        // A row with no terms has no residual. A NaN anywhere makes the result NaN, which is under
+        // no bound.
+        let mut worst = 0.0f64;
+        for (r, t) in residual.iter().zip(&terms) {
+            if *t != 0.0 {
+                let miss = r.abs() / t;
+                if miss > worst || miss.is_nan() {
+                    worst = miss;
+                }
+            }
+        }
+        worst
     }
 
     /// Makes the operating point an exact rest state of the discrete system.
@@ -617,12 +705,23 @@ impl Circuit {
     /// swamps a signal that a control has muted ahead of that stage. Folding each row's error at
     /// the operating point into the DC column removes it. What is left scales with the signal.
     ///
-    /// A pot change rebuilds `lin` without the pin: the operating point may have moved, and
-    /// pinning again needs a fresh DC solve.
+    /// The pin holds whatever point it is given, so the point is first checked against the DC
+    /// equations. A point that fails is a bug in the DC solve or in its caller, and panics. That
+    /// can only happen here, at construction: a pot change rebuilds `lin` in `update` without the
+    /// pin and without a DC solve (the operating point may have moved, and pinning again needs a
+    /// fresh solve), so `tick` reaches none of these checks.
     fn pin_operating_point(&mut self) {
-        /// Largest plausible rounding error of a row at rest, in volts. More is a real difference
-        /// between the DC solve and the discrete system, which the pin must not hide.
+        /// A gross-mismatch check only: a row this far from rest means the DC solve and the
+        /// discrete system describe different circuits. It cannot tell a wrong operating point
+        /// from a right one, because a slow capacitor turns a wrong DC voltage into a small miss
+        /// per sample: the test `wrong_operating_point_is_not_pinned` builds a point 0.5 mV off
+        /// that passes this bound. `dc_residual` is the check for that.
         const MAX_PIN_VOLTS: f64 = 1e-6;
+        let residual = self.dc_residual();
+        assert!(
+            residual < MAX_DC_RESIDUAL,
+            "the operating point misses the DC equations by {residual} of a row's terms"
+        );
         let (nx, nn) = (self.caps.len(), self.ports.len());
         let (base, rows) = (nx + 2, nx + 1 + nn);
         let dc = (nx + 1) * rows;
@@ -949,6 +1048,8 @@ fn solve_small(m: &mut Mat, n: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model;
+    use crate::netlist::Netlist;
     use std::f64::consts::PI;
 
     const Q2N3904: Bjt = Bjt {
@@ -1112,6 +1213,82 @@ mod tests {
         assert!(((9.0 - vb) / 10e3 - vb / 10e3 - i[1]).abs() < 1e-12, "base KCL");
         for _ in 0..1000 {
             assert!((c.tick(0.0) - ve).abs() < 1e-9);
+        }
+    }
+
+    /// The Green Diode Overdrive Model with its Controls at the given rotations.
+    fn green_overdrive(rotations: [f32; 3]) -> Netlist {
+        let plain: Vec<f64> = model::CONTROLS
+            .iter()
+            .zip(rotations)
+            .map(|(spec, r)| spec.plain(r))
+            .collect();
+        let mut n = Netlist::default();
+        model::circuit(&mut n);
+        let pots = n.pots.clone();
+        model::pots(&plain, &mut |name, ohms| {
+            let index = pots.iter().find(|p| p.0 == name).unwrap().1;
+            n.elements[index] = match n.elements[index] {
+                Element::Resistor(a, b, _) => Element::Resistor(a, b, ohms.max(1.0)),
+                _ => unreachable!(),
+            };
+        });
+        n
+    }
+
+    /// A DC operating point that belongs to another circuit is refused, not held at rest.
+    #[test]
+    #[should_panic(expected = "misses the DC equations")]
+    fn wrong_operating_point_is_not_pinned() {
+        let mut n = green_overdrive([0.5, 0.5, 0.0]);
+        let (vref, vcc, out) = (n.node("vref"), n.node("vcc"), n.output);
+        let correct = Circuit::new(n.elements.clone(), (out, 0), 576_000.0);
+        // Solve with 100 nA too much flowing into the bias node, then take that current away. The
+        // device state is consistent with itself and 0.5 mV from this circuit's operating point.
+        n.elements.push(Element::Vccs {
+            p: 0,
+            n: vref,
+            cp: vcc,
+            cn: 0,
+            gm: 100e-9 / 9.0,
+        });
+        let mut faulty = Circuit::new(n.elements, (out, 0), 576_000.0);
+        faulty.elements.pop();
+        faulty.update();
+        let bias_error = faulty.operating_point[vref - 1] - correct.operating_point[vref - 1];
+        assert!(
+            (bias_error - 0.5e-3).abs() < 0.01e-3,
+            "the fault moved the bias by {bias_error} V"
+        );
+        assert!(
+            correct.clone().dc_residual() < MAX_DC_RESIDUAL,
+            "the right point is accepted"
+        );
+        faulty.pin_operating_point();
+    }
+
+    /// Prints what `MAX_DC_STEP` and `MAX_DC_RESIDUAL` are set from: the worst last Newton step
+    /// and DC residual over the Controls and sample rates. Takes minutes; run it with
+    /// `cargo test --release -p dsp -- --ignored --nocapture dc_bounds`.
+    #[test]
+    #[ignore]
+    fn dc_bounds_over_controls_and_rates() {
+        let grid = [0.0f32, 0.1, 0.5, 0.9, 1.0];
+        for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let circuit_rate = rate * crate::oversample::factor_for(rate) as f64;
+            let (mut step, mut residual) = (0.0f64, 0.0f64);
+            for drive in grid {
+                for tone in grid {
+                    for level in grid {
+                        let n = green_overdrive([drive, tone, level]);
+                        let mut c = Circuit::new(n.elements, (n.output, 0), circuit_rate);
+                        residual = residual.max(c.dc_residual());
+                        step = step.max(c.solve_operating_point());
+                    }
+                }
+            }
+            println!("{rate} Hz: last Newton step {step:e} V, DC residual {residual:e}");
+            assert!(step < MAX_DC_STEP / 10.0 && residual < MAX_DC_RESIDUAL / 1e3);
         }
     }
 

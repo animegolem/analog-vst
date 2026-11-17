@@ -3,7 +3,8 @@
 The pack is upsampled 4x, split into sections (each with its trailing gap) that run in parallel from
 the circuit's DC operating point, then stitched and decimated. Sections are separated by silence
 longer than the circuit's settling time, so this matches one continuous run. Each run starts a little
-early, inside that silence, so the input is at rest when ngspice takes the operating point.
+early, inside that silence and ahead of the upsampling filter's ring, so the input is at rest when
+ngspice takes the operating point.
 """
 
 import multiprocessing
@@ -19,11 +20,9 @@ import numpy as np
 from scipy import signal as sps
 
 OVERSAMPLE = 4
-# Each section's simulation starts this many upsampled samples early, inside the silence before it.
-# The band-limited onset of a signal rings before the section's first sample; cut there, ngspice takes
-# its DC operating point with the input held at that first value (0.2 mV for a 5 kHz tone at -16 dBFS)
-# and the circuit's slow nodes carry the error for tenths of a second.
-PREROLL = 64 * OVERSAMPLE
+# Upsampled samples of rest at the start of each section's run; see preroll. At 96 kHz the pre-roll
+# comes to 256, the length the reference was first validated with.
+REST = 56 * OVERSAMPLE
 # ngspice's relative tolerance. 1e-6 is enough for the output interpolation error stated in run_section.
 # It is tighter because a control that mutes the signal ahead of the output stage leaves harmonics near
 # 1e-10 of full scale (-200 dBFS) for the comparison to read, and ngspice's own error is then visible.
@@ -64,6 +63,24 @@ def downsample(x: np.ndarray, fs: int) -> np.ndarray:
     h = oversampling_filter(fs)
     delay = (len(h) - 1) // 2 // OVERSAMPLE
     return sps.upfirdn(h, x, down=OVERSAMPLE)[delay : delay + len(x) // OVERSAMPLE]
+
+
+def onset_ring(fs: int) -> int:
+    """Upsampled samples before a signal's first sample that the upsampling filter can make nonzero."""
+    return (len(oversampling_filter(fs)) - 1) // 2
+
+
+def preroll(fs: int) -> int:
+    """How many upsampled samples early each section's simulation starts, inside the silence before it.
+
+    The band-limited onset of a signal rings before the section's first sample; cut there, ngspice takes
+    its DC operating point with the input held at that first value (0.2 mV for a 5 kHz tone at -16 dBFS)
+    and the circuit's slow nodes carry the error for tenths of a second. The ring is as long as half the
+    upsampling filter, which depends on the rate (28 samples at 96 kHz, 168 at 44.1 kHz), and the
+    interpolation compensation in run_section spreads it by half its own length. The run starts REST
+    samples ahead of that.
+    """
+    return onset_ring(fs) + len(interpolation_compensation()) // 2 + REST
 
 
 def interpolation_compensation(taps: int = 9) -> np.ndarray:
@@ -160,12 +177,14 @@ def render(netlist: Path, stimulus: np.ndarray, manifest: dict, params: dict, jo
         (sec["start"] * OVERSAMPLE, min((sec["start"] + sec["length"] + gap) * OVERSAMPLE, len(up)))
         for sec in manifest["sections"]
     ]
+    pre, ring = preroll(fs), onset_ring(fs)
     for a, _ in spans:
-        assert a >= PREROLL, "a section needs silence before it"
-        assert not up[a - PREROLL : a - PREROLL // 2].any(), "the input must be at rest where a section's run starts"
+        assert a >= pre, "a section needs silence before it"
+        # Everything ahead of the section's own ring: nonzero there is an earlier signal still playing.
+        assert not up[a - pre : a - ring].any(), "the input must be at rest where a section's run starts"
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        args = [(template, params, up[a - PREROLL : b], rate, work, f"s{i:03d}") for i, (a, b) in enumerate(spans)]
+        args = [(template, params, up[a - pre : b], rate, work, f"s{i:03d}") for i, (a, b) in enumerate(spans)]
         if jobs == 1:
             results = (run_section(*x) for x in args)
             pool = None
@@ -174,7 +193,7 @@ def render(netlist: Path, stimulus: np.ndarray, manifest: dict, params: dict, jo
             pool = ProcessPoolExecutor(jobs, mp_context=multiprocessing.get_context("spawn"))
             results = (f.result() for f in [pool.submit(run_section, *x) for x in args])
         for k, ((a, b), y) in enumerate(zip(spans, results), 1):
-            out[a:b] = y[PREROLL:]
+            out[a:b] = y[pre:]
             print(f"  section {k}/{len(spans)} done", file=sys.stderr, flush=True)
         if pool:
             pool.shutdown()
