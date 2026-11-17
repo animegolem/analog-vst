@@ -25,7 +25,8 @@
 1. Antiparallel diodes: write `n.diode_pair(a, b, model)` in model.rs (netlist keeps two D lines). Two separate
    `n.diode` calls make the solver joint-solve every device in the circuit (CPU ~4x).
 2. Validate controls that mute the output at 0. With the section-reset harness, four-stage-fuzz (volume=0) and
-   msk011-drive (level=0) pass there. green-overdrive still fails at level=0 and uses 0.05; the cause is open.
+   msk011-drive (level=0) pass there. green-overdrive passes at level=0 too, after three fixes in its
+   own Solver and harness copies (rest-state pin, Section pre-roll, tighter reference); see its README.
 3. Template BJT model is reduced Gummel-Poon (no charge storage/leakage). Take IS,BF,BR,VAF,IKF,RB,RC,RE from a cited
    vendor model and use the SAME reduced .model in the .cir. Document the omission.
 4. Op-amps: single-pole, no rail clipping/slew. Check op-amp outputs stay inside the rails at max settings with your
