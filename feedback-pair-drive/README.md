@@ -4,7 +4,7 @@ A stereo plugin modeled after the Music Thing Modular London Drive circuit (Prot
 
 The Circuit has four transistors. A long-tailed NPN pair (Q6, Q7) and a PNP second stage (Q3) form an inverting feedback amplifier with a 100k feedback resistor. An NPN phase splitter (Q5) with equal 2.7k collector and emitter resistors follows it. There is one Control, Level.
 
-**Status: validated, all Checks pass at all four Settings** (Full Validation of the current Solver, SPICE references from ngspice 45). The Plugin is **Offline-only**: it costs 172.7% of one core per stereo instance at 48 kHz on the test machine, so it can be bounced or frozen but not played live there.
+**Status: validated, all Checks pass at all four Settings, with no held sample in the Pack** (Full Validation of the current Solver, SPICE references from ngspice 45). Both bundles were built and installed after that run. The Plugin is **Offline-only**: it costs 172.7% of one core per stereo instance at 48 kHz on the test machine, so it can be bounced or frozen but not played live there.
 
 **Nothing was measured on hardware.** Validation compares two simplified descriptions of one Circuit: `reference/circuit.cir` (ngspice) and `dsp/src/model.rs`. No unit was measured and no recording was consulted.
 
@@ -114,7 +114,7 @@ It happens because the amplifier output pushes Q5's base to about -20 V through 
 
 ## Validation
 
-Full Validation with `./validate.sh`, ngspice 45, the full Pack (45 Sections), each Section started from the operating point in both the reference and the Model. No Tolerance and no Check was changed. It was run twice and passed both times: once in full, and once more after the Solver's failure handling changed (see "Solver change in this Project"). The second run reused the saved ngspice references, because the Netlist, the SPICE runner and the Pack were unchanged, and rendered the Model again at all four Settings. The tables below are from the second run; its four reports are identical to the first run's.
+Full Validation with `./validate.sh`, ngspice 45, the full Pack (45 Sections), each Section started from the operating point in both the reference and the Model. No Tolerance and no Check was changed. It was run three times and passed each time: once in full, once after the Solver's failure handling changed, and once after `render` began to fail on a held sample and the Solver began to check the complete capacitor history (see "Solver change in this Project"). The second and third runs reused the saved ngspice references, because the Netlist, the SPICE runner and the Pack were unchanged (the reference keys were the same before and after), and rendered the Model again at all four Settings. The tables below are from the third run; its four reports are identical to the second run's, which were identical to the first run's. Because `render` now stops on any held sample, the third run's completion shows there was none in the Pack at any Setting. The first two runs did not count them.
 
 | Setting | Level | Result |
 |---|---|---|
@@ -139,9 +139,9 @@ Burst null per Setting: -99.53 dB (`default`), -99.37 dB (`zero`), -61.58 dB (`h
 
 What this shows: the Model agrees with the Netlist. It does not show agreement with hardware; see the breakdown and transistor-model sections above.
 
-**Cost:** `cargo run -q --release --example bench -p dsp 48000` printed 172.7% of one core per stereo instance at 48 kHz (one run, with the changed Solver, nothing else heavy running, load average 5.8 on the test machine). The run before the Solver change printed 173.8%; one run each does not show a difference. Measure on yours with the same command.
+**Cost:** `cargo run -q --release --example bench -p dsp 48000` printed 172.7% of one core per stereo instance at 48 kHz (one run, with the Solver as it was at the second validation run, nothing else heavy running, load average 5.8 on the test machine). The run before that Solver change printed 173.8%; one run each does not show a difference. The cost was not measured again after the complete-history check was added. Measure on yours with the same command.
 
-**Tests:** `cargo test` passes (22 tests in `dsp`); `cd harness && uv run pytest -q` passes (7 tests).
+**Tests:** `cargo test` passes (23 tests in `dsp`, 1 in `render`); `cd harness && uv run pytest -q` passes (7 tests).
 
 ## Checked by hand
 
@@ -155,23 +155,33 @@ ngspice 45, single runs, before the validation.
 
 `dsp/src/circuit.rs` differs from the template in the joint Newton solve. At Level 1 with a 5 V input, the template's Solver did not converge and its output ran to 1e21 V on the first cycle. The cause was one scale applied to the whole Newton step: Q5's base, driven through C7, moves 0.7 V in one circuit sample, the extrapolated first guess put that junction at 1.58 V forward, and the step back was scaled by the 60 V the collector had to move. The Solver now limits each junction's move the way SPICE does, and lets the other voltages take the whole step. The equations being solved are unchanged. A unit test drives the Model with overdriven sines at four frequencies and requires every joint solve to converge.
 
-Bad samples are contained instead of asserted on, so nothing here can panic on the audio thread:
+Three kinds of bad sample are contained instead of asserted on, so none of the three can panic on the audio thread (one other assertion remains; see below):
 
-- **A solve that fails.** The joint solve has 200 iterations and stops when no port's Newton correction reaches 1 nV. If it runs out, or the new capacitor states or the output are not finite, that sample is discarded: capacitor states, port voltages and device currents stay as the last good sample left them, the output repeats that sample's value, and a counter goes up (`Processor::failed_solves`). The next sample starts from the last good state.
+- **A solve that fails.** The joint solve has 200 iterations and stops when no port's Newton correction reaches 1 nV. If it runs out, or the complete new capacitor history, the output, or any port voltage or device current is not finite, that sample is discarded. The new history is computed in scratch storage and checked whole before any of it is kept. Capacitor history, port voltages and device currents stay as the last good sample left them, the output repeats that sample's value, and a counter goes up (`Processor::failed_solves`). The next sample starts from the last good state.
 - **A non-finite input sample** (NaN or infinity) is treated as silence (0) before the oversampling filters, and again at the Solver's input.
 - **A NaN Control value** is rejected: the Control keeps its value (its default when the Plugin is built). Infinite values clamp to the ends of travel.
 
-Unit tests force each case: an iteration bound of 1 in the middle of a clipped sine, inputs of 1e6 V and 1e300 V, NaN and infinite samples, and a NaN Control.
+The offline renderer (`render`, which `validate.sh` uses) reads that counter after processing. If it is not zero, it exits with an error and writes no output file, so a capture with a held sample cannot reach a comparison.
+
+What the unit tests cover, and how:
+
+- **Running out of iterations**, two ways. One test sets the bound to 1 in the middle of a clipped sine; that hook exists only in test builds. The `render` test uses the production bound of 200: a 1 kHz sine with a normalized peak of 1e6 (5e6 V) at Level 1, 2048 samples at 48 kHz, has failed solves, and the render must fail and create no file.
+- **A history that overflows from finite operands.** An RC circuit driven with +1e308 V and -1e308 V in turn: the history must stay finite on every sample, and silence afterwards must solve normally and decay to rest. This runs the Solver's linear path. The overflow was not reproduced in the transistor Model.
+- **Absurd and non-finite input to the Model**: 1e6 V, 1e300 V, the largest finite value, NaN and infinities. The test requires finite output, at least one failed solve, and a return to rest. It does not record which samples failed or why.
+- **NaN and infinite samples at the Processor**, and **a NaN Control**.
 
 What the containment does not do:
 
-- It does not show that the solve converges for every input, Control history or sample rate. The Full Validation, the unit tests and a reviewer's 72 probe cases (four sample rates, Level 0.5, 0.9 and 1, 4096 samples each) had no failed solve; inputs of the 1e6 V class do produce failed solves.
+- It does not show that the solve converges for every input, Control history or sample rate. No failed solve occurred in the Pack at any of the four Settings: `render` fails on one, and the latest validation run completed. A unit test of overdriven sines (8 cases, up to 5 V peak) and a reviewer's 72 probe cases (four sample rates, Level 0.5, 0.9 and 1, 4096 samples each) had none either. Extreme finite inputs do reach containment: the sine with a normalized peak of 1e6 described above had 44 held circuit-rate samples over the two channels.
+- It does not make the Plugin fail visibly. Only `render` stops on a held sample; the Plugin holds the sample and carries on.
 - It does not clamp the output. A held sample repeats the last good output, and at an absurd input a converged sample can itself be far outside the rails.
 - After an input of the 1e6 V class the Model takes about 4 s of silence to return to rest. That was not compared with ngspice.
 - One assertion can still be reached on the audio thread in a release build: the matrix inversion that follows a Control change asserts that the matrix is not singular. No Control value or input tried has triggered it.
 - The Plugin does not read or show the failure counter.
 
 These changes came after the first Full Validation. The Full Validation was then run again with the changed Solver and passed at all four Settings, with reports identical to the first run's. The rendered samples are not bit-identical to the first run's at `full`: a render made with the changed Solver before the rerun was compared with the first run's captures and matched at `default`, `zero` and `high`; at `full`, 735 of 7,353,600 samples differed, by at most 7.3e-12 of full scale, all in the silence after the -40 dB sweep. The cause is the convergence test, which now reads the Newton correction instead of the difference of the voltages before and after the step. The rerun's captures have the same samples as that render at all four Settings.
+
+The third run followed two further changes: `render` fails on a held sample, and the Solver computes the complete candidate history before checking it. An accepted sample's history is the same sum with its two terms in the other order. The third run's captures were compared with the second run's, sample for sample: 0 of 7,353,600 samples differ at each of the four Settings.
 
 ## Build and use
 
