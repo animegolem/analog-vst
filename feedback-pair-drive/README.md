@@ -4,7 +4,7 @@ A stereo plugin modeled after the Music Thing Modular London Drive circuit (Prot
 
 The Circuit has four transistors. A long-tailed NPN pair (Q6, Q7) and a PNP second stage (Q3) form an inverting feedback amplifier with a 100k feedback resistor. An NPN phase splitter (Q5) with equal 2.7k collector and emitter resistors follows it. There is one Control, Level.
 
-**Status: not validated.** The Netlist and the Model are written and agree by hand at the points listed under "Checked by hand". `./validate.sh` has not been run, so no Check has been evaluated, and the Plugin has not been built or installed. Cost is not measured.
+**Status: validated, all Checks pass at all four Settings** (Full Validation, one run, ngspice 45). The Plugin is **Offline-only**: it costs 173.8% of one core per stereo instance at 48 kHz on the test machine, so it can be bounced or frozen but not played live there.
 
 **Nothing was measured on hardware.** Validation compares two simplified descriptions of one Circuit: `reference/circuit.cir` (ngspice) and `dsp/src/model.rs`. No unit was measured and no recording was consulted.
 
@@ -112,9 +112,40 @@ Neither ngspice's Gummel-Poon model nor the Solver models reverse breakdown. In 
 
 It happens because the amplifier output pushes Q5's base to about -20 V through C7, below the -12 V rail. A real junction would break down and conduct there. The Netlist and the Model do not, so they can agree with each other and both differ from hardware. The ratings are guaranteed minimums; the breakdown voltage of a given part is higher and unknown. What breakdown would change in hardware was not measured. This is the main limit on fidelity to hardware.
 
+## Validation
+
+Full Validation with `./validate.sh`, ngspice 45, the full Pack (45 Sections), each Section started from the operating point in both the reference and the Model. No Tolerance and no Check was changed. It passed on the first run.
+
+| Setting | Level | Result |
+|---|---|---|
+| `default` | 0.5 | PASS |
+| `zero` | 0 | PASS |
+| `high` | 0.9 | PASS |
+| `full` | 1 | PASS |
+
+Worst value of each Check across the four Settings, as the harness reports it:
+
+| Check | Worst value | Limit | Where |
+|---|---|---|---|
+| frequency response | 0.0534 | 0.1 | `high`, sweep at 0 dBFS |
+| static gain | 0.0036 | 0.1 | `full`, 5000 Hz at 0 dBFS |
+| harmonics | 0.2354 | 1 | `high`, H4 of 5000 Hz at -16 dBFS |
+| attack | 0 | 0.05 | all Settings |
+| release | 0 | 0.05 | all Settings |
+| intermodulation | 0.1242 | 1 | `default`, -20 dBFS |
+| burst waveform null | -61.58 dB | -40 dB | `high` |
+
+Burst null per Setting: -99.53 dB (`default`), -99.37 dB (`zero`), -61.58 dB (`high`), -63.37 dB (`full`). There is no Setting that mutes the output, because Level at 0 does not mute this Circuit.
+
+What this shows: the Model agrees with the Netlist. It does not show agreement with hardware; see the breakdown and transistor-model sections above.
+
+**Cost:** `cargo run -q --release --example bench -p dsp 48000` printed 173.8% of one core per stereo instance at 48 kHz (one run, machine otherwise idle). Measure on yours with the same command.
+
+**Tests:** `cargo test` passes (17 tests in `dsp`); `cd harness && uv run pytest -q` passes (7 tests).
+
 ## Checked by hand
 
-ngspice 45, single runs, before any validation.
+ngspice 45, single runs, before the validation.
 
 - **Operating point.** The Model's DC solve and ngspice agree within 20 uV on every node; a unit test holds this. Amplifier output +14.74 mV, pair tail -0.7071 V, Q3 base 11.3214 V, splitter base -5.0181 V, collector 5.8424 V, emitter -5.8228 V, both outputs 0 V. It does not depend on Level. Q3 is the first PNP in a Model in this repository.
 - **Gain at 1 kHz**, Model (through the `render` binary) against ngspice: -0.2406 against -0.2405 dB at Level 0, 5.6406 against 5.6407 dB at Level 0.5, 18.5788 against 18.5789 dB at Level 0.9, 35.5733 against 35.5733 dB at Level 1.
