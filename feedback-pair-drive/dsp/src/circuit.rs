@@ -701,10 +701,10 @@ impl Circuit {
 
     /// Processes one sample at the circuit's rate. Never panics on a bad sample:
     /// - a non-finite input sample is treated as 0 V;
-    /// - a sample whose solve fails (the joint Newton iteration runs out of steps, or the new
-    ///   state or output is not finite) leaves the capacitor states, port voltages and device
-    ///   currents as the last successful sample left them, returns that sample's output again and
-    ///   counts into `failed_solves`.
+    /// - a sample whose solve fails (the joint Newton iteration runs out of steps, or the complete
+    ///   new capacitor history, the output, or a port voltage or device current is not finite)
+    ///   leaves the capacitor history, port voltages and device currents as the last successful
+    ///   sample left them, returns that sample's output again and counts into `failed_solves`.
     pub fn tick(&mut self, u: f64) -> f64 {
         if self.dirty {
             self.update();
@@ -763,20 +763,26 @@ impl Circuit {
                 *a += m * zc;
             }
         }
-        // Second check, on what is about to be committed: the new states and the output.
-        solved &= self.acc[..=nx].iter().all(|a| a.is_finite());
-        if !solved {
-            // Contain the failure. `v_prev` and `i_prev` hold the last successful sample's port
-            // voltages and currents; go back to them. The next sample's first guess then has no
-            // slope, which only costs it iterations.
+        // The complete candidate history x' = gc2 * v + beta * x, built in `acc` and held back
+        // until the sample is accepted. Finite operands can overflow in this last step, so the
+        // finiteness check below must come after it.
+        for ((a, &x), &b) in self.acc.iter_mut().zip(&self.x).zip(&self.beta) {
+            *a += b * x;
+        }
+        // Second check, on everything about to be kept: the new history, the output, and the
+        // port voltages and device currents the next sample starts from.
+        let finite = |s: &[f64]| s.iter().all(|v| v.is_finite());
+        if !(solved && finite(&self.acc[..=nx]) && finite(&self.v) && finite(&self.z[base..])) {
+            // Contain the failure. The history `x` is untouched. `v_prev` and `i_prev` hold the
+            // last successful sample's port voltages and currents; go back to them. The next
+            // sample's first guess then has no slope, which only costs it iterations.
             self.v.copy_from_slice(&self.v_prev);
             self.z[base..].copy_from_slice(&self.i_prev);
             self.failed_solves = self.failed_solves.saturating_add(1);
+            debug_assert!(self.y.is_finite() && finite(&self.x) && finite(&self.v));
             return self.y;
         }
-        for ((x, &a), &b) in self.x.iter_mut().zip(&self.acc).zip(&self.beta) {
-            *x = a + b * *x;
-        }
+        self.x.copy_from_slice(&self.acc[..nx]);
         self.y = self.acc[nx];
         self.y
     }
@@ -1085,6 +1091,34 @@ mod tests {
             let expected = 1.0 / (1.0 + (warped * r * cap).powi(2)).sqrt();
             assert!((gain(&mut c, f, 1.0) - expected).abs() < 1e-4, "{f} Hz");
         }
+    }
+
+    #[test]
+    fn history_that_overflows_from_finite_operands_is_rejected() {
+        // An RC lowpass at a 1 Hz circuit rate, driven with +1e308 V and -1e308 V in turn. Both
+        // terms of the history update x' = gc2 * v + beta * x stay finite while their sum
+        // overflows. Such a sample must be rejected whole: the history never holds a non-finite
+        // value, and silence afterwards solves normally and decays to rest.
+        let elements = vec![
+            Element::Input(1, 0),
+            Element::Resistor(1, 2, 0.1),
+            Element::Capacitor(2, 0, 0.05),
+        ];
+        let mut c = Circuit::new(elements, (2, 0), 1.0);
+        for k in 0..100 {
+            let y = c.tick(if k % 2 == 0 { 1e308 } else { -1e308 });
+            assert!(y.is_finite(), "output {y} at sample {k}");
+            assert!(c.x.iter().all(|x| x.is_finite()), "history {:?} at sample {k}", c.x);
+        }
+        let failed = c.failed_solves();
+        assert!(failed > 0, "no sample overflowed, so this did not test the rejection");
+        let mut y = f64::INFINITY;
+        for k in 0..40_000 {
+            y = c.tick(0.0);
+            assert!(y.is_finite() && c.x[0].is_finite(), "sample {k} of silence");
+        }
+        assert_eq!(c.failed_solves(), failed, "silence solves normally afterwards");
+        assert!(y.abs() < 1e-6, "output {y} V after 40000 silent samples");
     }
 
     #[test]
