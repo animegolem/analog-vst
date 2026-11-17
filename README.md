@@ -16,6 +16,7 @@ plugin with measured hardware.
 | `seven-band-eq/` | Seven Band Graphic: seven-band graphic equalizer |
 | `four-stage-fuzz/` | Four Stage Sustainer: four-stage transistor fuzz |
 | `stack-boost/` | Three-Band Stack Boost: two op-amp stages around a passive bass, mid and treble tone stack |
+| `precision-rectifier/` | Precision Rectifier: two op-amp sections and two diodes, a DC-coupled full-wave rectifier with no controls |
 | `template-check/` | The unmodified template example, kept as a baseline |
 | `triage/` | A catalog of 104 candidate circuits sorted into tiers, with build briefs |
 | `upstream-patches/` | Patches and notes for the upstream template |

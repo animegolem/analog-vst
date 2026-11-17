@@ -1,0 +1,3 @@
+# Knob settings to validate: a name, then control=rotation pairs (0 = fully counter-clockwise,
+# 1 = fully clockwise). This Circuit has no Controls, so there is one Setting.
+default
