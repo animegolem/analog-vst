@@ -14,10 +14,13 @@
 /// Conductance standing in for an inductor at DC.
 const INDUCTOR_DC_SHORT: f64 = 1e9;
 
-/// Largest last Newton step, in volts, at which the DC operating point counts as converged. Newton
-/// converges quadratically, so the error left after a step this size is about
-/// step^2 / (2 Vt) = 2e-13 V. The step cannot be asked to reach zero: the DC equations are
-/// evaluated in double precision, and the steps can stop shrinking first. Measured on the Green
+/// Largest last Newton step at which the DC operating point counts as converged. The step is the
+/// largest change in any unknown: node voltages in volts and voltage-source currents in amperes,
+/// taken together. This bound and `MAX_DC_RESIDUAL` are the acceptance criteria; neither is a
+/// bound on the operating point's error. As a local heuristic only (exact arithmetic, one
+/// junction, quadratic convergence), a step this size leaves about step^2 / (2 Vt) = 2e-13 V.
+/// The step cannot be asked to reach zero: the DC equations are evaluated in double precision,
+/// and the steps can stop shrinking first. Measured on the Green
 /// Diode Overdrive Model over 125 combinations of its Controls (each at 0, 0.1, 0.5, 0.9 and 1):
 /// the last step was at most 1.8e-9 V, never under the 1e-12 V at which the loop stops early.
 /// With that Model's 0.001 ohm emitter resistances set to 1 ohm, one combination tried, the last
