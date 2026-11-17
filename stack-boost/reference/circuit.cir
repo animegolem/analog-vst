@@ -1,0 +1,82 @@
+* Three-Band Stack Boost: reduced Tonemender v1.0 circuit, Mid Shift fixed at HI (SW1 open).
+* SPICE reference for dsp/src/model.rs. Keep the two in step: same parts, values and pot formulas.
+* Independently transcribed component facts, not a copied schematic. See README.md.
+* Sources:
+*  [S1] https://runoffgroove.com/tonemender.html - schematic image tonemender.png, "Tonemender
+*       v1.0 (c)2005 runoffgroove.com": every value, the topology, pot values and tapers, the
+*       switch positions (page text: HI = open, LO = closed).
+*  [S2] https://runoffgroove.com/tonemender-pcb.pdf p1 - parts list: designators R1-R14,
+*       C1-C11, U1, SW1. Its values agree with [S1] part for part.
+*  [S3] https://runoffgroove.com/tonemender-perf.png - perfboard layout; confirms the pot lug
+*       wiring and that R10 (100k) joins the bass/mid junction to Vref.
+*  [S4] TI TLC227x datasheet SLOS190H, https://www.ti.com/lit/ds/symlink/tlc2272.pdf, pp8-9
+*       (VDD = +/-5 V table): AVD 50 V/mV typ at RL 10k, gain-bandwidth product 2.25 MHz typ.
+* Designators are those of [S2]. Where two parts share a value (R2/R3, R10/R14, R5/R11, C3/C8,
+* C9/C11) the assignment to a schematic position is inferred from board placement, not traced;
+* the values are the same either way.
+* Reduced configuration:
+*  - SW1 (DPDT, Mid Shift) fixed open = HI. C4 220p then sits in series with C5 150p, and C7 33n
+*    in series with C8 22n. Each junction touches only two capacitors and has no DC path, so
+*    each pair is written as its exact series equivalent: CTREB = 220p*150p/370p = 89.189189p,
+*    CMID = 33n*22n/55n = 13.2n. Equal to the two-capacitor form when the junction holds no
+*    trapped charge. The LO position (C4 and C7 shorted: 150p and 22n) is not modeled.
+*  - U1 is the TLC2272 the designer suggests first ([S1] also allows NE5532 and TL072; [S2]
+*    lists TL072). Single-pole model, A0 = 5e4, GBW = 2.25 MHz from [S4]; ideal inputs (no bias
+*    current, no input capacitance), zero output impedance, no rail clipping, no slew limit, no
+*    common-mode limit, no noise. The level control reaches 1 + 500k/4.7k = 107 V/V, so the real
+*    circuit clips at its rails (about 0.1 V and 8.9 V) long before this model does: valid only
+*    while both op-amp outputs stay inside the rails. 0 dBFS = 0.07 V peak at the input kept
+*    them inside for the single sines and the burst tested at the largest-gain control position
+*    found. That is not a bound: an input below 0.07 V peak that is not a single sine can
+*    exceed the rails, where the hardware would clip and this model does not (see README.md).
+*  - Controls: BASS = R8 500k audio, as a variable resistor (lugs 3 and 2 tied), ohms.
+*    MID = R9 100k audio, variable resistor to Vref, in parallel with R10, ohms.
+*    TREBLE = R7 500k linear, as a divider, 0 to 1 (1 = wiper at lug 3, the capacitor end).
+*    LEVEL = R13 500k audio, variable resistor in the U1b feedback path, ohms.
+*    Audio taper is the template law (10 percent at mid rotation); [S1] says only "A".
+*    Lug 1 is assumed to be the counter-clockwise end of each pot.
+*  - Ideal 9 V supply; ideal voltage source at the input (R4 10M is then across the source and
+*    has no effect; kept for part-for-part correspondence); 1 Meg external load (assumed).
+*  - Omitted: bypass switching and jacks (none drawn), SW1 itself, capacitor ESR and leakage,
+*    resistor and pot tolerances, noise, op-amp supply current into R1/C1.
+* Validation establishes agreement to this simplified SPICE circuit, not hardware.
+.subckt opamp inp inn out
+* A0 = gm*Rp = 5e4, pole = 1/(2*pi*Rp*Cp) = GBW/A0 = 45 Hz. Scaled form (small gm, large Rp)
+* as in seven-band-eq, which ngspice 45 integrates without "Timestep too small". The model's
+* op-amp (gm = A0/1k into 1k) has the same gain and the same pole.
+G1 0 p inp inn 5e-4
+Rp p 0 1e8
+Cp p 0 35.36776513p
+E1 out 0 p 0 1
+.ends
+V9 v9 0 DC 9
+R1 v9 vp 100
+C1 vp 0 100u
+R2 vp vref 100k
+R3 vref 0 100k
+C2 vref 0 100u
+$SOURCE
+R4 in 0 10meg
+C3 in ib 22n
+R5 ib vref 1meg
+XU1A ib a a opamp
+R6 a s 200k
+CTREB a tt 89.189189189p
+RTREBLE1 tt tw {max(500k * (1 - $TREBLE), 1)}
+RTREBLE2 tw t1 {max(500k * $TREBLE, 1)}
+R11 tw vref 1meg
+C6 s t1 47n
+RBASS t1 m {max($BASS, 1)}
+CMID s m 13.2n
+RMID m vref {max($MID, 1)}
+R10 m vref 100k
+XU1B tw fb bo opamp
+C10 fb bo 47p
+RLEVEL fb bo {max($LEVEL, 1)}
+R12 fb g 4.7k
+C9 g vref 470n
+C11 bo out 470n
+R14 out 0 100k
+RLOAD out 0 1meg
+$ANALYSIS
+.end
