@@ -10,11 +10,11 @@ redistributed here.
 Nothing was measured on hardware. Validation compares two simplified descriptions of one Circuit:
 the Netlist in `reference/circuit.cir`, simulated by ngspice, and the Model in `dsp/src/model.rs`.
 
-**Status: all-PASS in a Full Validation** (2026-11-17, one Setting, first run, ngspice 45). That
-run compared the captures through a shifted window. The same captures, measured again where the
-Pack puts each Section, also pass every Check; no Full Validation has been run since. See
-"Validation". Cost is about one core per stereo instance at 48 kHz, so treat the Plugin as
-Offline-only: bounce or freeze it. See "Cost".
+**Status: all-PASS in a Full Validation** (2026-11-17, one Setting, ngspice 45), with both
+captures compared at their known alignment. An earlier Full Validation the same day also passed,
+but it compared the captures through a shifted window and is superseded. See "Validation". Cost
+is about one core per stereo instance at 48 kHz, so treat the Plugin as Offline-only: bounce or
+freeze it. See "Cost".
 
 ## What it does to a signal
 
@@ -202,24 +202,20 @@ One: `default`. There is no Control to put at 0 or at 1, and none that mutes the
 ## Validation
 
 Full Validation on 2026-11-17, ngspice 45, the full Pack (45 Sections, 76.6 s at 96 kHz), run once
-from an empty `validation/` directory. It passed on the first run; nothing was changed between
-authoring and validation. One Setting, so every value below is also the worst value.
+from an empty `validation/` directory: the reference was simulated again and the Model rendered
+again. Both captures were compared at known alignment (the report prints delay 0 samples and
+polarity +1 for each). It passed on that run. One Setting, so every value below is also the worst
+value.
 
-That run aligned both captures by the sync chirp: delay -1446 samples and polarity -1 on both
-sides, which is wrong (see "How the harness sees this Circuit"). The second column below is what
-the run reported. The third is the same two captures measured again with `harness compare
---alignment known` (delay 0, polarity +1 on both sides), which is what `validate.sh` does now.
-Nothing was simulated or rendered again, and `validate.sh` has not been run since the change.
-
-| Check | Result | As run (shifted window) | Same captures, known alignment | Limit | Worst case at known alignment |
-|---|---|---|---|---|---|
-| frequency response | pass | 0.0307 dB (sweep at 0 dBFS) | 0.0054 dB | 0.1 | sweep at -20 dBFS |
-| static gain | pass | 0.00049 dB | 0.00049 dB | 0.1 | 5000 Hz at 0 dBFS |
-| harmonics | pass | 0.0064 dB | 0.0064 dB | 1 | H5 of 5000 Hz at 0 dBFS |
-| attack | pass | 0 | 0 | 0.05 | no gain change in either |
-| release | pass | 0 | 0 | 0.05 | no gain change in either |
-| intermodulation | pass | 0.0001 dB | 0.0001 dB | 1 | -6 dBFS |
-| burst waveform null | pass | -112.8 dB | -112.8 dB | -40 | dB relative to reference |
+| Check | Result | Value | Limit | Worst case |
+|---|---|---|---|---|
+| frequency response | pass | 0.0054 dB | 0.1 | sweep at -20 dBFS |
+| static gain | pass | 0.00049 dB | 0.1 | 5000 Hz at 0 dBFS |
+| harmonics | pass | 0.0064 dB | 1 | H5 of 5000 Hz at 0 dBFS |
+| attack | pass | 0 | 0.05 | no gain change in either |
+| release | pass | 0 | 0.05 | no gain change in either |
+| intermodulation | pass | 0.0001 dB | 1 | -6 dBFS |
+| burst waveform null | pass | -112.8 dB | -40 | dB relative to reference |
 
 | Setting | Result |
 |---|---|
@@ -229,15 +225,22 @@ Read the table with "How the harness sees this Circuit" in mind:
 
 - Attack and release pass because neither capture shows a gain change. They test nothing here.
 - Frequency response and static gain compare the residue of the fundamental, not a gain.
-- The burst null as run covered the burst less its last 15.06 ms. At known alignment it covers
-  the whole burst (-112.85 dB against -112.82 dB).
-- The frequency-response value of 0.0307 dB came from the shifted window. At known alignment the
-  worst sweep reads 0.0054 dB and the 0 dBFS sweep 0.0043 dB.
-- Outside the Checks: the two whole captures (all 45 Sections, 76.6 s) differ by -82.2 dB as a
-  plain waveform null with no alignment. The pink-noise Section is rendered but no Check reads it.
+- The burst null covers the whole burst (-112.85 dB).
+- The pink-noise Section is rendered but no Check reads it.
 
-On 2026-11-17, after the alignment change: `cargo test` 10 passed, `(cd harness && uv run pytest
--q)` 10 passed.
+**The earlier run, superseded.** The first Full Validation, the same day, also passed all seven
+Checks, on the first run after authoring. It aligned both captures by the sync chirp, which gave
+delay -1446 samples and polarity -1 on both sides. That is wrong (see "How the harness sees this
+Circuit"), so every Section's window read 15.06 ms early and the burst null left out the last
+15.06 ms of the burst. Through that window it reported frequency response 0.0307 dB (sweep at
+0 dBFS) and burst null -112.82 dB; the other five values were the same as above to the digits
+shown. Its two whole captures differed by -82.2 dB as a plain waveform null with no alignment;
+that figure was not taken again for this run.
+
+Between the two runs the harness's comparison, the reference cache key and one test changed. In
+`dsp/` only a comment and a test changed, and the Netlist did not change.
+
+After this run: `cargo test` 10 passed, `(cd harness && uv run pytest -q)` 10 passed.
 
 ## What was checked by hand
 
@@ -271,8 +274,10 @@ first measured) and at known alignment. It is not the Pack.
 About one core per stereo instance at 48 kHz. Eight runs of the benchmark on 2026-11-17, one at a
 time, gave 90.4 % to 110.9 % of one core (90.4, 90.6, 90.7, 91.1, 95.9, 101.2, 101.2, 110.9). The
 machine was not idle: another program was using about 12 of its 16 cores and the load average was
-15 to 17, so the idle figure is probably near the low end and was not measured. Either way the
-Plugin is at the edge of one core. Treat it as Offline-only (bounce or freeze); it may play live
+15 to 17, so the idle figure is probably near the low end and was not measured. A ninth run, right
+after the Full Validation above, gave 90.8 % with a one-minute load average of 8.2 before and 8.5
+after (five-minute 30, still falling from the validation), so it is not an idle figure either.
+Either way the Plugin is at the edge of one core. Treat it as Offline-only (bounce or freeze); it may play live
 on an idle machine with a large buffer, and that was not tried.
 
 The cost comes from the circuit rate of 2304 kHz, four times the template's. 576 kHz fails the
