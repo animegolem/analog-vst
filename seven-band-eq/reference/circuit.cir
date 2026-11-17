@@ -1,7 +1,8 @@
 * Seven-band graphic EQ: Rev 1 from Tom Whitwell / Music Thing Modular.
 * Source: https://musicthing.co.uk/collateral/graphic_schematic.pdf
 * BOM: https://github.com/TomWhitwell/Graphic (Rev 1 workbook).
-* Faders are unspecified in schematic/BOM: ASSUME 10k linear, unverified.
+* Faders: Alpha RA2045F-20R-15LC-B10K-C, 10k linear (B taper), centre detent. The schematic and the
+* Rev 1 workbook give no value; the part number is from the Thonk kit parts list (Graphic EQ BOM sheet).
 * NE5532 approximated single-pole A0=100000 GBW=10MHz; no clipping/slew/noise.
 * Ideal source; 1Meg external load; LEDs and supply decoupling omitted.
 * 0dBFS = 0.5V peak pending rail check.
