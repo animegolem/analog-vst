@@ -60,16 +60,22 @@ def main():
     s.add_argument("--rate", type=int, default=96_000)
     s.add_argument("--quick", action="store_true", help="shorter pack with fewer levels, for CI")
 
+    alignment_help = (
+        "known: the captures are sample-aligned with the pack, as this harness's own spice and "
+        "model-sections captures are; chirp: recover delay and polarity from the sync chirp"
+    )
     a = sub.add_parser("analyze", help="measure one capture of the pack")
     a.add_argument("pack", type=Path, help="pack.json")
     a.add_argument("capture", type=Path)
     a.add_argument("-o", "--out", type=Path)
+    a.add_argument("--alignment", choices=analysis.ALIGNMENTS, required=True, help=alignment_help)
 
     c = sub.add_parser("compare", help="validate a model capture against a reference capture")
     c.add_argument("pack", type=Path, help="pack.json")
     c.add_argument("reference", type=Path)
     c.add_argument("model", type=Path)
     c.add_argument("-o", "--out", type=Path, required=True, help="report directory")
+    c.add_argument("--alignment", choices=analysis.ALIGNMENTS, required=True, help=alignment_help)
 
     r = sub.add_parser("spice", help="render a SPICE reference capture of the pack with ngspice")
     r.add_argument("netlist", type=Path)
@@ -108,8 +114,11 @@ def main():
         y = spice.render(args.netlist, stimulus * scale, manifest, params) / scale
         sf.write(args.out, y.astype(np.float32), fs, subtype="FLOAT")
     elif args.cmd == "analyze":
-        result = json.dumps(analysis.analyze(stimulus, read_capture(args.capture, fs), manifest), indent=1)
+        result = json.dumps(
+            analysis.analyze(stimulus, read_capture(args.capture, fs), manifest, args.alignment), indent=1
+        )
         args.out.write_text(result) if args.out else print(result)
     else:
-        ok = compare.run(stimulus, manifest, read_capture(args.reference, fs), read_capture(args.model, fs), args.out)
+        reference, model = read_capture(args.reference, fs), read_capture(args.model, fs)
+        ok = compare.run(stimulus, manifest, reference, model, args.out, args.alignment)
         sys.exit(0 if ok else 1)

@@ -10,7 +10,9 @@ redistributed here.
 Nothing was measured on hardware. Validation compares two simplified descriptions of one Circuit:
 the Netlist in `reference/circuit.cir`, simulated by ngspice, and the Model in `dsp/src/model.rs`.
 
-**Status: all-PASS in a Full Validation** (2026-11-17, one Setting, first run, ngspice 45). See
+**Status: all-PASS in a Full Validation** (2026-11-17, one Setting, first run, ngspice 45). That
+run compared the captures through a shifted window. The same captures, measured again where the
+Pack puts each Section, also pass every Check; no Full Validation has been run since. See
 "Validation". Cost is about one core per stereo instance at 48 kHz, so treat the Plugin as
 Offline-only: bounce or freeze it. See "Cost".
 
@@ -128,25 +130,64 @@ Each was made for a measured cause. No Check and no Tolerance was changed.
 
 | File | Change | Cause, measured |
 |---|---|---|
-| `dsp/src/oversample.rs` | Circuit rate 576 kHz to 2304 kHz | A rectifier's harmonics fall only as 1/k^2, and those above half the circuit rate fold back. On a 4 s, 0 dBFS sweep, measured as the harness measures frequency response, against the Model at 4608 kHz: 576 kHz differs by 0.67 dB, 1152 kHz by 0.12 dB, 1536 kHz by 0.10 dB, 2304 kHz by 0.02 dB |
-| `harness/src/analog_harness/spice.py` | Reference oversampling 4 to 16 | The same folding, in the reference: ngspice's output is read at 384 kHz with no filter in front. On a 1 s, 0 dBFS sweep the reference at 4 differs from the reference at 24 by 0.55 dB, at 8 by 0.13 dB, at 16 by 0.012 dB. At 16 the Netlist and the Model at 2304 kHz differ by 0.013 dB |
+| `dsp/src/oversample.rs` | Circuit rate 576 kHz to 2304 kHz | A rectifier's harmonics fall only as 1/k^2, and those above half the circuit rate fold back. On a 1 s, 0 dBFS sweep, measured as the harness measures frequency response, against the Netlist at 16: the Model at 576 kHz differs by 0.40 dB, at 1152 kHz by 0.079 dB, at 2304 kHz by 0.013 dB. See "Is 2304 kHz needed?" below |
+| `harness/src/analog_harness/spice.py` | Reference oversampling 4 to 16 | The same folding, in the reference: ngspice's output is read at 384 kHz with no filter in front. On a 1 s, 0 dBFS sweep the reference at 4 differs from the reference at 24 by 0.83 dB, at 8 by 0.13 dB, at 16 by 0.012 dB |
 | `dsp/src/circuit.rs`, `Device::Diode` | ngspice's reverse-bias law and GMIN | ngspice's diode current below -3 N Vt is `-Is (1 + (3 N Vt / (e v))^3)`, not the exponential law, and it adds 1e-12 S across the junction. With 2.52 nA into 100k and 200k the difference is microvolts. At 100 Hz, -40 dBFS it was 0.0275 dB of the harness's gain measure; with the change it is under 0.0001 dB and the waveform null goes from -80 dB to -131 dB |
+| `harness/…/analysis.py`, `compare.py`, `cli.py`, `validate.sh` | `compare` and `analyze` take a required `--alignment`: `known` (delay 0, polarity +1) or `chirp` (recovered from the sync chirp). `validate.sh` uses `known` | Chirp recovery put both captures 1446 samples off, which moved every Section's window. See "How the harness sees this Circuit" |
+| `reference-key.sh`, `validate.sh` | The reference cache key covers the Netlist, `spice.py`, both Pack files and the ngspice version | With the template's key, a reference made at 4 would have been reused after the change to 16. Carried over from green-overdrive |
 | `harness/…/cli.py`, `validate.sh`, `install.sh`, `spice.py` | Section reset, forced `CARGO_TARGET_DIR`, `SETTINGS=<file>`, refusal of a transient operating point | Carried over from the other Projects |
 
 `diagnostics/` holds the scripts that produced these numbers.
 
+### Is 2304 kHz needed?
+
+It is enough. It is not shown to be the least that is enough.
+
+The rate was chosen from figures taken through the shifted window (next section). Those were, on
+a 4 s, 0 dBFS sweep against the Model at 4608 kHz: 576 kHz 0.67 dB, 1152 kHz 0.12 dB, 1536 kHz
+0.10 dB, 2304 kHz 0.02 dB. The 4 s captures were not kept, so these four were not measured again.
+
+The 1 s captures were kept and were measured again at the correct alignment. By their file
+times the Model captures were made before the diode change in the table above.
+
+| 1 s, 0 dBFS sweep, frequency-response measure | Shifted window | Correct alignment |
+|---|---|---|
+| Netlist at 4 against Netlist at 24 | 0.55 dB | 0.83 dB |
+| Netlist at 8 against Netlist at 24 | 0.13 dB | 0.13 dB |
+| Netlist at 16 against Netlist at 24 | 0.012 dB | 0.012 dB |
+| Model at 576 kHz against Netlist at 16 | 0.54 dB | 0.40 dB |
+| Model at 1152 kHz against Netlist at 16 | 0.107 dB | 0.079 dB |
+| Model at 2304 kHz against Netlist at 16 | 0.013 dB | 0.013 dB |
+
+- The reference needs 16: at 8 it is 0.13 dB from the reference at 24, more than the Tolerance.
+- 576 kHz fails at either alignment.
+- **1152 kHz is inside the Tolerance at the correct alignment on this sweep** (0.079 dB of 0.1),
+  and was outside it through the shifted window (0.107 dB). So the old reason for ruling it out
+  does not hold, and a lower rate would cost less. Not tried: a Full Validation at 1152 kHz, or any rate
+  between 1152 and 2304 kHz at the correct alignment.
+
 ## How the harness sees this Circuit
 
 The harness was built for Circuits that pass their fundamental. This one removes it. That
-changes what three Checks mean, and makes two numbers in every report wrong.
+changes what three Checks mean, and it defeats the template's way of lining up a capture.
 
-- **Delay and polarity in the report are wrong, and the same wrong for both captures.** The
-  harness finds them by correlating a capture with the sync chirp. A rectified chirp hardly
-  correlates with the chirp, but its second harmonic does, 15.06 ms early and with the sign
-  flipped. The Netlist and the Model both come out at -1446 samples and polarity -1 (observed on
-  the Pack's opening sections). The true values are 0 and +1. Both captures are shifted alike, the
-  step and burst windows have room for 15 ms, and no Check depends on the sign, so the comparison
-  is not affected. The alignment code is unchanged.
+- **The sync chirp cannot align this Circuit, so the harness does not use it here.** The
+  template finds a capture's delay and polarity by correlating it with the sync chirp. A
+  rectified chirp hardly correlates with the chirp, but its second harmonic does, 15.06 ms early
+  and with the sign flipped. The Netlist and the Model both come out at -1446 samples and
+  polarity -1. The true values are 0 and +1.
+- **An equal wrong shift on both sides is not harmless.** The harness moves the capture and
+  keeps each Section's window where the Pack puts it, so every window reads 15.06 ms early. The
+  burst null then leaves out the last 15.06 ms of the burst: 0.1 of full scale added to the last
+  5 ms of the Model's burst passed all seven Checks with unchanged values, and fails the burst
+  null at -34.0 dB in the correct window. The frequency-response value also depends on the
+  shift, because the response window is fixed. The sign flip alone changes nothing.
+- **What the harness does now.** Both captures that `validate.sh` makes have their latency
+  removed, for any Circuit, so their alignment is known: delay 0, polarity +1. `validate.sh`
+  passes `--alignment known` and the report states the alignment it used. `--alignment chirp`
+  remains for a capture of unknown delay, such as a recording, and is only right for a Circuit
+  that passes the chirp. The option is required, so the choice is always stated. A test adds the
+  5 ms defect to a rectified Pack and requires the burst null to fail.
 - **"Static gain" and "frequency response" measure the residue of the fundamental**, which the
   zero-crossing spike leaves, not a gain. They test how well the Model reproduces the spike.
 - **"Harmonics" are in dB relative to that residue**, so the second harmonic reads about
@@ -164,15 +205,21 @@ Full Validation on 2026-11-17, ngspice 45, the full Pack (45 Sections, 76.6 s at
 from an empty `validation/` directory. It passed on the first run; nothing was changed between
 authoring and validation. One Setting, so every value below is also the worst value.
 
-| Check | Result | Worst value | Limit | Worst case |
-|---|---|---|---|---|
-| frequency response | pass | 0.0307 dB | 0.1 | sweep at 0 dBFS |
-| static gain | pass | 0.00049 dB | 0.1 | 5000 Hz at 0 dBFS |
-| harmonics | pass | 0.0064 dB | 1 | H5 of 5000 Hz at 0 dBFS |
-| attack | pass | 0 | 0.05 | no gain change in either |
-| release | pass | 0 | 0.05 | no gain change in either |
-| intermodulation | pass | 0.0001 dB | 1 | -6 dBFS |
-| burst waveform null | pass | -112.8 dB | -40 | dB relative to reference |
+That run aligned both captures by the sync chirp: delay -1446 samples and polarity -1 on both
+sides, which is wrong (see "How the harness sees this Circuit"). The second column below is what
+the run reported. The third is the same two captures measured again with `harness compare
+--alignment known` (delay 0, polarity +1 on both sides), which is what `validate.sh` does now.
+Nothing was simulated or rendered again, and `validate.sh` has not been run since the change.
+
+| Check | Result | As run (shifted window) | Same captures, known alignment | Limit | Worst case at known alignment |
+|---|---|---|---|---|---|
+| frequency response | pass | 0.0307 dB (sweep at 0 dBFS) | 0.0054 dB | 0.1 | sweep at -20 dBFS |
+| static gain | pass | 0.00049 dB | 0.00049 dB | 0.1 | 5000 Hz at 0 dBFS |
+| harmonics | pass | 0.0064 dB | 0.0064 dB | 1 | H5 of 5000 Hz at 0 dBFS |
+| attack | pass | 0 | 0 | 0.05 | no gain change in either |
+| release | pass | 0 | 0 | 0.05 | no gain change in either |
+| intermodulation | pass | 0.0001 dB | 0.0001 dB | 1 | -6 dBFS |
+| burst waveform null | pass | -112.8 dB | -112.8 dB | -40 | dB relative to reference |
 
 | Setting | Result |
 |---|---|
@@ -182,15 +229,15 @@ Read the table with "How the harness sees this Circuit" in mind:
 
 - Attack and release pass because neither capture shows a gain change. They test nothing here.
 - Frequency response and static gain compare the residue of the fundamental, not a gain.
-- As predicted, the report gives delay -1446 samples and polarity -1 for both the reference and
-  the Model. Both are wrong for this Circuit and identical on the two sides.
-- The frequency-response value (0.0307 dB) is larger than the hand measurement on a 1 s sweep
-  (0.013 dB). It is the Check with the least margin, and its worst case is the loudest sweep,
-  which fits folding of harmonics as the cause. That cause was not isolated in this run.
+- The burst null as run covered the burst less its last 15.06 ms. At known alignment it covers
+  the whole burst (-112.85 dB against -112.82 dB).
+- The frequency-response value of 0.0307 dB came from the shifted window. At known alignment the
+  worst sweep reads 0.0054 dB and the 0 dBFS sweep 0.0043 dB.
 - Outside the Checks: the two whole captures (all 45 Sections, 76.6 s) differ by -82.2 dB as a
   plain waveform null with no alignment. The pink-noise Section is rendered but no Check reads it.
 
-Also on 2026-11-17: `cargo test` 10 passed, `(cd harness && uv run pytest -q)` 7 passed.
+On 2026-11-17, after the alignment change: `cargo test` 10 passed, `(cd harness && uv run pytest
+-q)` 10 passed.
 
 ## What was checked by hand
 
@@ -216,7 +263,8 @@ runner. One Setting exists, so the two operating conditions below stand in for "
 A hand-made short signal set (`diagnostics/short_pack.py`: sync, two 1 s sweeps, five tones, a
 1 s burst, one intermodulation tone) through the harness's compare gave: frequency response
 0.013 dB, static gain 0.0005 dB, harmonics 0.006 dB, intermodulation 0.0001 dB, burst null
--112.2 dB. It is not the Pack.
+-112.2 dB. The saved captures give the same figures at the chirp's alignment (-1446 samples, as
+first measured) and at known alignment. It is not the Pack.
 
 ## Cost
 
@@ -227,8 +275,8 @@ machine was not idle: another program was using about 12 of its 16 cores and the
 Plugin is at the edge of one core. Treat it as Offline-only (bounce or freeze); it may play live
 on an idle machine with a large buffer, and that was not tried.
 
-The cost comes from the circuit rate of 2304 kHz, four times the template's, which the
-frequency-response Check needs (see "Changes to the template in this Project").
+The cost comes from the circuit rate of 2304 kHz, four times the template's. 576 kHz fails the
+frequency-response Check; whether a rate between would pass is open (see "Is 2304 kHz needed?").
 
 ```sh
 env CARGO_TARGET_DIR=$PWD/target cargo run -q --release --example bench -p dsp 48000
@@ -262,7 +310,7 @@ Not legal advice.
 ```sh
 cargo test
 (cd harness && uv run pytest -q)
-./validate.sh    # one validation at a time; delete validation/ first
+./validate.sh    # one validation at a time; delete validation/ first (the Pack is not rebuilt)
 ./install.sh     # only after every Setting passes a Full Validation
 ```
 

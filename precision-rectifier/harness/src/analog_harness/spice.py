@@ -20,7 +20,7 @@ from scipy import signal as sps
 # ngspice's output is read at fs * OVERSAMPLE with no filter in front, so whatever the circuit puts
 # above half that rate folds back. The template's 4 (384 kHz) is enough for circuits whose
 # harmonics fall fast. A rectifier's fall as 1/k^2: on a 1 s, 0 dBFS sweep of this circuit the
-# reference at 4 differed from the reference at 24 by 0.55 dB in the frequency-response measure,
+# reference at 4 differed from the reference at 24 by 0.83 dB in the frequency-response measure,
 # at 8 by 0.13 dB and at 16 by 0.012 dB. A higher factor only costs time (about 2.6x from 4 to 16).
 # At the Pack's 96 kHz the filter delay is a whole number of base samples at 4, 8, 16 and 24.
 OVERSAMPLE = 16

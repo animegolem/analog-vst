@@ -3,7 +3,10 @@
 # (or the file named by $SETTINGS). QUICK=1 uses a shorter test pack (for CI); VERBOSE=1 shows
 # the harness's output.
 # Writes validation/<setting>/report.md (with plots) and validation/summary.md.
-# Exits non-zero if any check fails. SPICE references are reused while the netlist is unchanged.
+# Exits non-zero if any check fails. SPICE references are reused while the netlist, the SPICE
+# runner, the pack and the ngspice version are unchanged (reference-key.sh).
+# Both captures are made here with their latency removed, so they are compared at their known
+# alignment and not through the sync chirp.
 set -euo pipefail
 cd "$(dirname "$0")"
 # Build into ./target even if the user exports a shared CARGO_TARGET_DIR: the scripts and harness
@@ -23,7 +26,8 @@ cargo build --quiet --release -p render
 mkdir -p validation
 [ -f validation/pack/pack.json ] || (cd harness && uv run --quiet harness signals ${QUICK:+--quick} ../validation/pack >/dev/null)
 
-netlist_hash=$(shasum reference/circuit.cir | cut -d' ' -f1)
+# Netlist, SPICE runner, Pack and ngspice version: whatever a reference capture depends on.
+reference_key=$(./reference-key.sh)
 quiet=/dev/null
 [[ -n "${VERBOSE:-}" ]] && quiet=/dev/stderr
 status=0
@@ -34,7 +38,7 @@ while read -r -u 3 name controls; do
   dir="validation/$name"
   mkdir -p "$dir"
   # shellcheck disable=SC2086  # controls is a space-separated list of arguments
-  key="$netlist_hash $(./target/release/render --plain $controls | tr '\n' ' ')"
+  key="$reference_key $(./target/release/render --plain $controls | tr '\n' ' ')"
   if [[ ! -f "$dir/reference.wav" || "$(cat "$dir/reference.key" 2>/dev/null)" != "$key" ]]; then
     echo "== $name: simulating the circuit in SPICE (a few minutes)"
     # shellcheck disable=SC2086
@@ -44,7 +48,7 @@ while read -r -u 3 name controls; do
   echo "== $name: rendering the model and comparing"
   # shellcheck disable=SC2086
   (cd harness && uv run --quiet harness model-sections ../validation/pack/pack.json $controls -o "../$dir/model.wav")
-  if (cd harness && uv run --quiet harness compare ../validation/pack/pack.json "../$dir/reference.wav" "../$dir/model.wav" -o "../$dir"); then
+  if (cd harness && uv run --quiet harness compare --alignment known ../validation/pack/pack.json "../$dir/reference.wav" "../$dir/model.wav" -o "../$dir"); then
     summary+=$'\n'"| $name | PASS |"
   else
     summary+=$'\n'"| $name | FAIL |"

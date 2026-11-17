@@ -9,9 +9,10 @@
 /// 576 kHz measures 0.05 dB.
 ///
 /// This circuit needs more for another reason. A rectifier's harmonics fall only as 1/k^2, and those
-/// above half the circuit rate fold back into the audio band. On a 4 s, 0 dBFS sweep, measured as
-/// the harness measures frequency response and against the same model at 4608 kHz: 576 kHz differs
-/// by 0.67 dB, 1152 kHz by 0.12 dB, 1536 kHz by 0.10 dB and 2304 kHz by 0.02 dB.
+/// above half the circuit rate fold back into the audio band. On a 1 s, 0 dBFS sweep, measured as
+/// the harness measures frequency response and against the SPICE reference at 16x: 576 kHz differs
+/// by 0.40 dB, 1152 kHz by 0.079 dB and 2304 kHz by 0.013 dB. 2304 kHz is known to be enough;
+/// whether 1152 kHz passes a full validation was not tried (see the README).
 pub const MIN_CIRCUIT_RATE: f64 = 2_304_000.0;
 const PASSBAND_HZ: f64 = 20_000.0;
 const ATTENUATION_DB: f64 = 120.0;
@@ -182,7 +183,11 @@ mod tests {
 
     #[test]
     fn matches_harness_tap_counts() {
-        // Same lengths as oc_harness.spice.oversampling_filter (4x).
+        // Same lengths as analog_harness.spice.oversampling_filter at this Project's
+        // OVERSAMPLE of 16, and at the template's 4.
+        assert_eq!(design(44_100.0, 16).len(), 1345);
+        assert_eq!(design(48_000.0, 16).len(), 753);
+        assert_eq!(design(96_000.0, 16).len(), 225);
         assert_eq!(design(44_100.0, 4).len(), 337);
         assert_eq!(design(48_000.0, 4).len(), 189);
         assert_eq!(design(96_000.0, 4).len(), 57);

@@ -1,8 +1,8 @@
 """One sweep through the Netlist at several reference oversampling factors and through several
 builds of the Model, compared pairwise with the harness's own frequency-response measure.
 
-Shows what each side's sampling rate contributes to the frequency-response Check. Alignment is
-forced to the delay and polarity the harness finds on the full Pack for this Circuit.
+Shows what each side's sampling rate contributes to the frequency-response Check. Every capture
+is measured at its known alignment (delay 0, polarity +1), as validate.sh compares them.
 
 Usage, from harness/:
   uv run python ../diagnostics/sweep_resolution.py .. <work dir> <seconds> <level dBFS> \
@@ -22,8 +22,6 @@ import numpy as np
 import soundfile as sf
 
 from analog_harness import analysis, signals, spice
-
-DELAY, POLARITY = -1446, -1
 
 proj, work = Path(sys.argv[1]), Path(sys.argv[2])
 secs, level = float(sys.argv[3]), float(sys.argv[4])
@@ -59,8 +57,7 @@ for label, binary in binaries.items():
 
 def response(y):
     full = np.concatenate([np.zeros(gap), y.astype(np.float32).astype(np.float64)])
-    aligned = np.concatenate([np.zeros(-DELAY), full])[: len(stim)] * POLARITY
-    return analysis.frequency_response(stim, aligned, sec, fs)
+    return analysis.frequency_response(stim, full, sec, fs)
 
 
 measured = {k: response(v) for k, v in caps.items()}

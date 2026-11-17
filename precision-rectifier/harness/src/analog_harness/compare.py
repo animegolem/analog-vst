@@ -138,12 +138,20 @@ def plot(ref: dict, dut: dict, out_dir: Path):
     plt.close(fig)
 
 
-def run(stimulus: np.ndarray, manifest: dict, ref_capture: np.ndarray, dut_capture: np.ndarray, out_dir: Path) -> bool:
+def run(
+    stimulus: np.ndarray,
+    manifest: dict,
+    ref_capture: np.ndarray,
+    dut_capture: np.ndarray,
+    out_dir: Path,
+    alignment: str,
+) -> bool:
+    """`alignment` is analysis.KNOWN for the harness's own captures, analysis.CHIRP for unknown delay."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    ref = analysis.analyze(stimulus, ref_capture, manifest)
-    dut = analysis.analyze(stimulus, dut_capture, manifest)
-    ref_aligned = analysis.align(stimulus, ref_capture, manifest)[0] * ref["polarity"]
-    dut_aligned = analysis.align(stimulus, dut_capture, manifest)[0] * dut["polarity"]
+    ref = analysis.analyze(stimulus, ref_capture, manifest, alignment)
+    dut = analysis.analyze(stimulus, dut_capture, manifest, alignment)
+    ref_aligned = analysis.place(stimulus, ref_capture, manifest, alignment)[0]
+    dut_aligned = analysis.place(stimulus, dut_capture, manifest, alignment)[0]
     results = checks(ref, dut, burst_null(ref_aligned, dut_aligned, manifest))
     passed = all(c["passed"] for c in results)
 
@@ -157,8 +165,13 @@ def run(stimulus: np.ndarray, manifest: dict, ref_capture: np.ndarray, dut_captu
             f"| {c['name']} | {'pass' if c['passed'] else 'FAIL'} | {c['value']:.4g} | {c['limit']:g} | {c['detail']} |"
         )
     summary = "\n".join(lines)
+    placed = "\n".join(
+        f"- {name}: delay {side['delay_samples']} samples, polarity {side['polarity']:+d}"
+        for name, side in (("Reference", ref), ("Model", dut))
+    )
     (out_dir / "report.md").write_text(
         f"# Validation report: {'PASS' if passed else 'FAIL'}\n\n{summary}\n\n"
+        f"Alignment: {alignment}.\n\n{placed}\n\n"
         "![](frequency_response.png)\n\n![](harmonics.png)\n\n![](dynamics.png)\n"
     )
     print(summary)

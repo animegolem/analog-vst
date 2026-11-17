@@ -16,7 +16,7 @@ from string import Template
 import numpy as np
 import soundfile as sf
 
-from analog_harness import compare, signals, spice
+from analog_harness import analysis, compare, signals, spice
 
 proj, work = Path(sys.argv[1]), Path(sys.argv[2])
 work.mkdir(parents=True, exist_ok=True)
@@ -69,7 +69,7 @@ np.save(work / "mini_stim.npy", stim)
 np.save(work / "mini_ref.npy", r)
 np.save(work / "mini_model.npy", m)
 (work / "mini.json").write_text(json.dumps(man))
-ok = compare.run(stim, man, r, m, work / "mini_report")
+ok = compare.run(stim, man, r, m, work / "mini_report", analysis.KNOWN)
 rep = json.loads((work / "mini_report/report.json").read_text())
 print(
     "passed",

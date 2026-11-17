@@ -12,6 +12,16 @@ def to_db(x):
     return 20 * np.log10(np.maximum(np.abs(x), 10 ** (FLOOR_DB / 20)))
 
 
+# How a capture is placed against the stimulus before anything is measured.
+# KNOWN: the capture is already sample-aligned with the stimulus and has its polarity. This holds
+# by construction for the two captures the harness makes itself (`harness spice` and
+# `harness model-sections` both remove their own latency), whatever the Circuit does to the signal.
+# CHIRP: delay and polarity are recovered from the sync chirp. For a capture of unknown delay, such
+# as a recording. It needs a Circuit that passes the chirp: one that removes the fundamental (a
+# rectifier) makes it lock onto a harmonic image, and the windows of every Section then move.
+ALIGNMENTS = KNOWN, CHIRP = "known", "chirp"
+
+
 def align(stimulus: np.ndarray, capture: np.ndarray, manifest: dict) -> tuple[np.ndarray, int, int]:
     """Finds the capture's delay and polarity from the sync chirp; returns the aligned capture."""
     sync = next(s for s in manifest["sections"] if s["kind"] == "sync")
@@ -24,6 +34,19 @@ def align(stimulus: np.ndarray, capture: np.ndarray, manifest: dict) -> tuple[np
     aligned = capture[delay:] if delay >= 0 else np.concatenate([np.zeros(-delay), capture])
     aligned = np.pad(aligned, (0, max(0, len(stimulus) - len(aligned))))[: len(stimulus)]
     return aligned, delay, polarity
+
+
+def place(stimulus: np.ndarray, capture: np.ndarray, manifest: dict, alignment: str) -> tuple[np.ndarray, int, int]:
+    """The capture on the stimulus's time axis with positive polarity, and the delay and polarity used."""
+    assert alignment in ALIGNMENTS, f"alignment must be one of {ALIGNMENTS}, not {alignment!r}"
+    if alignment == CHIRP:
+        aligned, delay, polarity = align(stimulus, capture, manifest)
+        return aligned * polarity, delay, polarity
+    if len(capture) != len(stimulus):
+        raise ValueError(
+            f"a capture of known alignment has the stimulus's length ({len(stimulus)} samples), not {len(capture)}"
+        )
+    return capture, 0, 1
 
 
 def sine_fit(x: np.ndarray, fs: int, freqs) -> np.ndarray:
@@ -137,11 +160,18 @@ def imd(cap: np.ndarray, sec: dict, fs: int) -> dict:
     return {"level_db": sec["level_db"], "imd_db": float(to_db(np.sqrt(np.sum(amps[4:] ** 2))) - to_db(amps[3]))}
 
 
-def analyze(stimulus: np.ndarray, capture: np.ndarray, manifest: dict) -> dict:
+def analyze(stimulus: np.ndarray, capture: np.ndarray, manifest: dict, alignment: str) -> dict:
     fs = manifest["sample_rate"]
-    cap, delay, polarity = align(stimulus, capture, manifest)
-    cap = cap * polarity
-    out = {"delay_samples": delay, "polarity": polarity, "sweeps": [], "steps": [], "bursts": [], "imd": []}
+    cap, delay, polarity = place(stimulus, capture, manifest, alignment)
+    out = {
+        "alignment": alignment,
+        "delay_samples": delay,
+        "polarity": polarity,
+        "sweeps": [],
+        "steps": [],
+        "bursts": [],
+        "imd": [],
+    }
     for sec in manifest["sections"]:
         match sec["kind"]:
             case "sweep":
