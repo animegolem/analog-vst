@@ -106,6 +106,7 @@ So this Plugin is about 0.2 dB brighter at 20 kHz than the same Circuit with com
 
 - **First PNP in the repository.** The Solver's PNP path had no test. Three were added in `dsp/src/circuit.rs` (mirror of the NPN, Jacobian against finite differences, a PNP stage's operating point), and `dsp/src/model.rs` checks this Circuit's operating point against ngspice: every node within 8 microvolts.
 - **Junction limiting.** The template's joint Newton solve stopped at 64 iterations without converging when the amplifier clipped hard, and the output then ran away (10^23 V, then NaN in the file). The solve now limits each junction's step as SPICE does and limits the extrapolated starting point the same way. A test drives a 5 V peak, 1 kHz sine at full drive, requires convergence on every sample, and asserts the clip levels against ngspice: +11.684 V, -10.755 V, 11.129 V RMS. In the renders counted so far (at 576 kHz) the solve took 2.3 iterations on average and 17 at most.
+- **A sample that cannot be solved is held.** The joint solve is bounded at 200 iterations and reports whether it converged. If it did not, or if any new value is not finite, the sample is not accepted: the capacitor states stay as they were, the previous output is repeated, a counter records it, and the next sample starts from the last accepted solution. Nothing panics. `render` refuses to write a file if the counter is not zero, so a capture never contains a held sample; the plugin keeps playing. No input tried so far makes the solve fail with the 200 bound; a test forces it with a bound of 1. A NaN or infinite input sample is treated as 0, both before the oversampling filter and at the solver.
 - **Circuit rate 4.608 MHz** (the template runs at 576 kHz). At full drive the output transistor takes about half a microsecond to come out of cutoff, and that delay sets the even harmonics. At 576 kHz the second harmonic of a 5 kHz tone was up to 10.3 dB away from SPICE; at 4.608 MHz the worst harmonic error is 0.29 dB by hand and 0.28 dB in the Full Validation (H4 of 5 kHz at 0 dBFS), against a Tolerance of 1 dB. This is why the Plugin costs so much.
 - **Remaining edge-timing difference.** At full drive and full-scale input the Model's clipped edges still differ from SPICE by a fraction of a microsecond at high frequencies. Whole-tone waveform difference, by hand: -56 dB at 1 kHz, -42 dB at 5 kHz, -31 dB at 10 kHz, -24 dB at 20 kHz. Gain and harmonics agree at all of them.
 
@@ -162,7 +163,7 @@ Checked by hand before validation, on short signals, Model against ngspice 45:
 
 ```
 env CARGO_TARGET_DIR=$PWD/target cargo test
-cd harness && uv run pytest -q
+(cd harness && uv run pytest -q)
 ./validate.sh
 ./install.sh
 ```

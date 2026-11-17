@@ -84,6 +84,13 @@ fn run(args: &[String]) -> Result<(), String> {
         right.extend(std::iter::repeat_n(0.0, latency));
     }
     processor.process(&mut left, &mut right);
+    // A held sample is not the Circuit's response; do not write a capture that contains one.
+    let failed = processor.failed_samples();
+    if failed > 0 {
+        return Err(format!(
+            "the solver did not converge on {failed} circuit-rate samples; no output written"
+        ));
+    }
 
     let out_spec = hound::WavSpec {
         bits_per_sample: 32,

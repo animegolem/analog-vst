@@ -151,7 +151,7 @@ mod tests {
 
     /// A 5 V peak (0 dBFS) 1 kHz sine at full drive overdrives the amplifier about 120 times: the
     /// PNP goes from saturation to cutoff within a few samples. The solve must converge on every
-    /// sample (a debug assertion in the solver checks it) and land on ngspice's clipped levels at
+    /// sample (the solver's failure count stays 0) and land on ngspice's clipped levels at
     /// `out` over 40 to 50 ms: +11.684 V, -10.755 V, 11.129 V RMS (`tran 1u 50m 0 0.4u`, reltol
     /// 1e-6). Levels are read from the mean of two neighbouring samples: after a clipping corner
     /// trapezoidal integration rings at half the circuit rate, far above what the decimation
@@ -173,10 +173,98 @@ mod tests {
                 sum_sq += y * y;
             }
         }
+        assert_eq!(c.failures(), 0, "every sample converged");
         let rms = (sum_sq / (to - from) as f64).sqrt();
         assert!((max - 11.683_84).abs() < 2e-3, "positive clip {max}");
         assert!((min + 10.754_58).abs() < 2e-3, "negative clip {min}");
         assert!((rms - 11.129_0).abs() < 2e-3, "rms {rms}");
         println!("clip levels: max {max:.5} V, min {min:.5} V, rms {rms:.5} V");
+    }
+
+    /// The solver's own iteration bound, as `set_joint_limit` accepts it.
+    const JOINT_LIMIT: usize = 200;
+
+    /// The 0 dBFS, 1 kHz test tone at the circuit's rate.
+    fn sine(k: usize) -> f64 {
+        5.0 * (std::f64::consts::TAU * 1000.0 * k as f64 / MIN_CIRCUIT_RATE).sin()
+    }
+
+    /// The joint solve is made to fail on every sample for 2 ms of the full-drive 5 V sine, by
+    /// lowering its iteration bound to 1 (with the real bound of 200 no input found so far makes
+    /// it fail). Each failed sample must repeat the previous output and leave the circuit's state
+    /// alone. The state is checked through its consequences: with the bound restored, the circuit
+    /// must carry on exactly like a twin that was simply never given those 2 ms. The two share
+    /// their capacitor states and differ only in the solver's starting point, so their outputs
+    /// agree to the solver's precision. Measured: 9216 of 9216 samples failed, and the outputs
+    /// over the following 5 ms were equal (difference 0 V).
+    #[test]
+    fn failed_solves_hold_the_state_and_the_next_samples_recover() {
+        let (mut c, _) = build(1.0, &[]);
+        let (mut skipped, _) = build(1.0, &[]);
+        let at = |ms: f64| (ms * 1e-3 * MIN_CIRCUIT_RATE) as usize;
+        let mut last = 0.0;
+        for k in 0..at(5.0) {
+            last = c.tick(sine(k));
+            assert_eq!(last, skipped.tick(sine(k)));
+        }
+        assert_eq!(c.failures(), 0);
+
+        c.set_joint_limit(1);
+        for k in at(5.0)..at(7.0) {
+            assert_eq!(
+                c.tick(sine(k)),
+                last,
+                "sample {k}: a failed sample repeats the last output"
+            );
+        }
+        assert_eq!(
+            c.failures(),
+            (at(7.0) - at(5.0)) as u64,
+            "every sample in the window failed"
+        );
+        assert!(last.is_finite() && last.abs() < 13.0);
+
+        // 2 ms is two whole periods, so the twin's input continues without a jump.
+        c.set_joint_limit(JOINT_LIMIT);
+        let mut worst = 0.0f64;
+        for k in at(7.0)..at(12.0) {
+            let (y, want) = (c.tick(sine(k)), skipped.tick(sine(k)));
+            assert!(y.is_finite() && y.abs() < 13.0, "sample {k}: {y}");
+            worst = worst.max((y - want).abs());
+        }
+        assert_eq!(
+            c.failures(),
+            (at(7.0) - at(5.0)) as u64,
+            "no failure after the bound is restored"
+        );
+        assert_eq!(skipped.failures(), 0);
+        assert!(
+            worst < 1e-6,
+            "difference to the twin that skipped the window: {worst:e} V"
+        );
+        println!("largest difference to the twin: {worst:e} V");
+    }
+
+    /// NaN and both infinities at the circuit's input count as 0 V: from rest, the output during
+    /// and after them is bit-identical to a twin fed silence, and it stays at rest. Rest is not
+    /// exactly 0 V: the output wanders by a few nanovolts of rounding (measured below).
+    #[test]
+    fn non_finite_input_then_silence_stays_at_rest() {
+        let (mut c, _) = build(1.0, &[]);
+        let (mut silent, _) = build(1.0, &[]);
+        let rest = silent.tick(0.0);
+        assert_eq!(c.tick(0.0).to_bits(), rest.to_bits());
+        for u in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
+            assert_eq!(c.tick(u).to_bits(), silent.tick(0.0).to_bits(), "input {u}");
+        }
+        let mut worst = 0.0f64;
+        for k in 0..10_000 {
+            let y = c.tick(0.0);
+            assert_eq!(y.to_bits(), silent.tick(0.0).to_bits(), "sample {k}");
+            worst = worst.max((y - rest).abs());
+        }
+        assert!(worst < 1e-6, "largest distance from rest: {worst:e} V");
+        assert_eq!(c.failures(), 0);
+        println!("largest distance from rest: {worst:e} V");
     }
 }

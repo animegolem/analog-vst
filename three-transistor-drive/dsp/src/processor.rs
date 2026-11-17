@@ -64,13 +64,27 @@ impl Processor {
         });
     }
 
+    /// Processes both channels in place. A non-finite input sample (NaN or infinity) is treated
+    /// as 0 before it reaches the oversampling filter, so it cannot linger in the filter's
+    /// history. Never panics; a sample the solver cannot solve is held (see `failed_samples`).
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         let scale = model::VOLTS_PER_FULL_SCALE;
         for ((circuit, os), buf) in self.channels.iter_mut().zip([left, right]) {
             for x in buf.iter_mut() {
-                *x = (os.process(*x as f64 * scale, |u| circuit.tick(u)) / scale) as f32;
+                let u = if x.is_finite() { *x as f64 * scale } else { 0.0 };
+                *x = (os.process(u, |u| circuit.tick(u)) / scale) as f32;
             }
         }
+    }
+
+    /// Circuit-rate samples, over both channels since construction, that the solver did not
+    /// accept. Each one kept the circuit's state and repeated the previous circuit-rate output,
+    /// so the audio stays finite but is not the Circuit's response there. 0 means every sample
+    /// was solved.
+    pub fn failed_samples(&self) -> u64 {
+        self.channels
+            .iter()
+            .fold(0, |n, (circuit, _)| n.saturating_add(circuit.failures()))
     }
 
     /// Delay in samples from the oversampling filters.
@@ -81,5 +95,30 @@ impl Processor {
     /// Control values in physical units, as substituted into the SPICE netlist.
     pub fn plain_controls(&self) -> &[f64] {
         &self.controls
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// NaN and both infinities at the Plugin's input, then silence, at full drive: every output
+    /// sample is finite and bit-identical to a processor that was fed silence throughout.
+    #[test]
+    fn non_finite_input_is_silence_and_does_not_linger() {
+        let mut dirty = Processor::new(48_000.0, &[1.0]);
+        let mut clean = Processor::new(48_000.0, &[1.0]);
+        let n = dirty.latency() + 64;
+        let (mut left, mut right) = (vec![0.0f32; n], vec![0.0f32; n]);
+        (left[1], left[2], left[5]) = (f32::NAN, f32::INFINITY, f32::NEG_INFINITY);
+        right[0] = f32::NAN;
+        dirty.process(&mut left, &mut right);
+        let (mut left_ref, mut right_ref) = (vec![0.0f32; n], vec![0.0f32; n]);
+        clean.process(&mut left_ref, &mut right_ref);
+        for (got, want) in left.iter().chain(&right).zip(left_ref.iter().chain(&right_ref)) {
+            assert!(got.is_finite());
+            assert_eq!(got.to_bits(), want.to_bits());
+        }
+        assert_eq!(dirty.failed_samples(), 0);
     }
 }
