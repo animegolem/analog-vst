@@ -11,8 +11,11 @@ Nothing has been filed or pushed. Evidence comes from the green-overdrive and ms
   `solver-coupling-groups.md`). Its CPU numbers were measured on an overloaded machine. Known gaps:
   greedy ordering, not a true topological sort; groups are fixed at construction.
 
-Item 3 below is partly superseded: with section reset, four-stage-fuzz (volume 0) and msk011-drive
-(level 0) pass at a muted setting. green-overdrive still fails at level 0.
+Item 3 below states a diagnosis that was never proven: that a muted setting fails because the
+SPICE reference cannot resolve it. With section reset, four-stage-fuzz (volume 0) and msk011-drive
+(level 0) pass at a muted setting, so the cause there was the section-state mismatch. green-overdrive
+still fails at level 0; its 0.05 setting is a workaround and the cause is unresolved. Do not send
+item 3 upstream as written.
 
 ## 1. A single tightly coupled device pair makes the whole circuit use the joint solve (high impact, small)
 
