@@ -114,3 +114,17 @@ def test_spice_reference_matches_analytic_rc(tmp_path):
     f = np.array(fr["freqs"])
     expected = -10 * np.log10(1 + (2 * np.pi * f * 1000 * 10e-9) ** 2)
     assert np.max(np.abs(np.array(fr["db"]) - expected)) < 0.01
+
+
+def test_spice_refuses_a_section_with_no_silence_before_it(tmp_path):
+    """Each section's run starts early, in silence; a section that has none is not simulated."""
+    netlist = tmp_path / "rc.cir"
+    netlist.write_text("* RC\n$SOURCE\nR1 in out 1k\nC1 out 0 10n\n$ANALYSIS\n.end\n")
+    tone = signals.tone(FS, 1000, 0.1, -6)
+    gap = np.zeros(FS // 2)
+    # No samples before the section, then a signal still playing where the run would start.
+    for before, reason in ((np.zeros(0), "needs silence"), (tone, "must be at rest")):
+        stim = np.concatenate([before, tone, gap])
+        manifest = {"sample_rate": FS, "sections": [{"kind": "step", "start": len(before), "length": len(tone)}]}
+        with pytest.raises(AssertionError, match=reason):
+            spice.render(netlist, stim, manifest, {}, jobs=1)

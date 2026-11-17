@@ -343,6 +343,7 @@ impl Circuit {
         circuit.update();
         circuit.order_devices();
         circuit.solve_operating_point();
+        circuit.pin_operating_point();
         circuit
     }
 
@@ -603,6 +604,54 @@ impl Circuit {
             dev.eval(&self.v[first..first + np], &mut i, &mut j);
             self.z[base + first..base + first + np].copy_from_slice(&i[..np]);
             self.i_prev[first..first + np].copy_from_slice(&i[..np]);
+        }
+    }
+
+    /// Makes the operating point an exact rest state of the discrete system.
+    ///
+    /// The rows of `lin` are differences of entries of a double-precision inverse, so they agree
+    /// with one another to about one part in 1e12, not exactly. At rest the history states are
+    /// large (2 C rate V: 35 A for 10 uF holding 3 V at 576 kHz), so each row carries a constant
+    /// error of picoamps that no element conducts. A coupling capacitor turns that into a steady
+    /// current: 2e-11 A into a 10k load is 0.2 uV at the output, which settles in over 0.1 s and
+    /// swamps a signal that a control has muted ahead of that stage. Folding each row's error at
+    /// the operating point into the DC column removes it. What is left scales with the signal.
+    ///
+    /// A pot change rebuilds `lin` without the pin: the operating point may have moved, and
+    /// pinning again needs a fresh DC solve.
+    fn pin_operating_point(&mut self) {
+        /// Largest plausible rounding error of a row at rest, in volts. More is a real difference
+        /// between the DC solve and the discrete system, which the pin must not hide.
+        const MAX_PIN_VOLTS: f64 = 1e-6;
+        let (nx, nn) = (self.caps.len(), self.ports.len());
+        let (base, rows) = (nx + 2, nx + 1 + nn);
+        let dc = (nx + 1) * rows;
+        let out_at_rest =
+            node_val(&self.operating_point, self.output.0) - node_val(&self.operating_point, self.output.1);
+        for r in 0..rows {
+            // At rest a capacitor's state repeats (x' = row - x = x), an inductor has no voltage
+            // (x' = row + x = x), and the output and ports sit at their operating-point voltages.
+            let (at_rest, volts) = if r < nx {
+                ((1.0 - self.beta[r]) * self.x[r], 1.0 / self.gc2[r].abs())
+            } else if r == nx {
+                (out_at_rest, 1.0)
+            } else {
+                (self.v[r - nx - 1], 1.0)
+            };
+            let mut row = self.lin[dc + r];
+            for c in 0..nx {
+                row += self.lin[c * rows + r] * self.x[c];
+            }
+            for k in 0..nn {
+                row += self.lin[(base + k) * rows + r] * self.z[base + k];
+            }
+            let error = at_rest - row;
+            assert!(
+                error.abs() * volts < MAX_PIN_VOLTS,
+                "row {r} is {} V from the operating point",
+                error * volts
+            );
+            self.lin[dc + r] += error;
         }
     }
 

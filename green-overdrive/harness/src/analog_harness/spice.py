@@ -2,7 +2,8 @@
 
 The pack is upsampled 4x, split into sections (each with its trailing gap) that run in parallel from
 the circuit's DC operating point, then stitched and decimated. Sections are separated by silence
-longer than the circuit's settling time, so this matches one continuous run.
+longer than the circuit's settling time, so this matches one continuous run. Each run starts a little
+early, inside that silence, so the input is at rest when ngspice takes the operating point.
 """
 
 import multiprocessing
@@ -18,6 +19,21 @@ import numpy as np
 from scipy import signal as sps
 
 OVERSAMPLE = 4
+# Each section's simulation starts this many upsampled samples early, inside the silence before it.
+# The band-limited onset of a signal rings before the section's first sample; cut there, ngspice takes
+# its DC operating point with the input held at that first value (0.2 mV for a 5 kHz tone at -16 dBFS)
+# and the circuit's slow nodes carry the error for tenths of a second.
+PREROLL = 64 * OVERSAMPLE
+# ngspice's relative tolerance. 1e-6 is enough for the output interpolation error stated in run_section.
+# It is tighter because a control that mutes the signal ahead of the output stage leaves harmonics near
+# 1e-10 of full scale (-200 dBFS) for the comparison to read, and ngspice's own error is then visible.
+# Observed on this circuit with level at 0, on the 2nd harmonic of a 5 kHz tone at -16 dBFS, as the
+# distance between two runs' lines: the run at 1e-6 is about 30e-12 of full scale from the run at 1e-7.
+# Runs at 1e-7, 1e-8 and 1e-9, with the maximum step from a quarter to a sixteenth of a sample, are
+# 0.2e-12 to 26e-12 from one another, and no closer as the setting tightens. A run at 1e-10 is about
+# 200e-12 from all of them. So 1e-11 to 3e-11 of full scale is not resolved at any setting tried, and
+# 1e-7 with a quarter-sample step is the cheapest of the settings that agree that far.
+RELTOL = 1e-7
 SECTION_TIMEOUT_S = 900
 NOISE_FLOOR_V = 1e-9
 PASSBAND_HZ = 20_000
@@ -91,7 +107,7 @@ def run_section(template: Template, params: dict, x: np.ndarray, rate: int, work
         "timeoffset=0 timescale=1 timerelative=false amplstep=false)",
         # Tight tolerances and a quarter-sample maximum step keep output interpolation error
         # below 0.002 dB at 20 kHz.
-        ANALYSIS=".options interp reltol=1e-6 abstol=1e-15 vntol=1e-9 itl1=2000 itl6=1000\n.save v(out)\n"
+        ANALYSIS=f".options interp reltol={RELTOL:g} abstol=1e-15 vntol=1e-9 itl1=2000 itl6=1000\n.save v(out)\n"
         f".tran {step:.12e} {(len(x) - 1) * step:.12e} 0 {step / 4:.12e}\n"
         f".control\nset noaskquit\nset filetype=binary\nrun\nwrite {raw} v(out)\nquit\n.endc",
     )
@@ -144,9 +160,12 @@ def render(netlist: Path, stimulus: np.ndarray, manifest: dict, params: dict, jo
         (sec["start"] * OVERSAMPLE, min((sec["start"] + sec["length"] + gap) * OVERSAMPLE, len(up)))
         for sec in manifest["sections"]
     ]
+    for a, _ in spans:
+        assert a >= PREROLL, "a section needs silence before it"
+        assert not up[a - PREROLL : a - PREROLL // 2].any(), "the input must be at rest where a section's run starts"
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
-        args = [(template, params, up[a:b], rate, work, f"s{i:03d}") for i, (a, b) in enumerate(spans)]
+        args = [(template, params, up[a - PREROLL : b], rate, work, f"s{i:03d}") for i, (a, b) in enumerate(spans)]
         if jobs == 1:
             results = (run_section(*x) for x in args)
             pool = None
@@ -155,7 +174,7 @@ def render(netlist: Path, stimulus: np.ndarray, manifest: dict, params: dict, jo
             pool = ProcessPoolExecutor(jobs, mp_context=multiprocessing.get_context("spawn"))
             results = (f.result() for f in [pool.submit(run_section, *x) for x in args])
         for k, ((a, b), y) in enumerate(zip(spans, results), 1):
-            out[a:b] = y
+            out[a:b] = y[PREROLL:]
             print(f"  section {k}/{len(spans)} done", file=sys.stderr, flush=True)
         if pool:
             pool.shutdown()

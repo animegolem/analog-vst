@@ -83,3 +83,30 @@ impl Processor {
         &self.controls
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With no input the circuit stays at its operating point, wherever each control sits. A drift
+    /// of 1e-6 full scale is 10 dB under a -40 dBFS tone once a control mutes the signal by 100 dB.
+    #[test]
+    fn silence_stays_at_rest() {
+        let defaults: Vec<f32> = model::CONTROLS.iter().map(|c| c.default).collect();
+        for control in 0..defaults.len() {
+            for end in [0.0, 1.0] {
+                let mut rotations = defaults.clone();
+                rotations[control] = end;
+                let mut processor = Processor::new(96_000.0, &rotations);
+                let (mut left, mut right) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
+                processor.process(&mut left, &mut right);
+                let drift = left.iter().fold(0.0f32, |m, y| m.max((y - left[0]).abs()));
+                assert!(
+                    drift < 1e-10,
+                    "{} at {end}: drifts by {drift}",
+                    model::CONTROLS[control].name
+                );
+            }
+        }
+    }
+}
