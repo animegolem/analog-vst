@@ -1920,38 +1920,102 @@ mod tests {
         n
     }
 
-    /// Control rotations to measure over: every combination of 0, 0.1, 0.5, 0.9 and 1 when there
-    /// are at most 125 of them, otherwise the five combinations with every Control alike and 120
-    /// drawn from a fixed pseudo-random sequence.
-    fn control_grid() -> Vec<Vec<f32>> {
+    /// Bound on the Control positions `scan_positions` returns, and so on the Circuits the DC
+    /// bounds test builds at each rate.
+    const SCAN_MAX_POSITIONS: usize = 4096;
+
+    /// A Control rotation at which the Class A Transistor Drive's DC solve once ended on its
+    /// largest last Newton step, 5.6e-8 (0.2496256, between the positions a coarse grid visits).
+    /// Every Control of every Project is measured there.
+    const SCAN_STALL_ROTATION_BITS: u32 = 0x3e7f_9dda;
+
+    /// Control positions for the DC bounds test: at most `SCAN_MAX_POSITIONS`, the same on every
+    /// run. A Model with no Control has one position. Otherwise, in this order and without
+    /// repeats until the bound is reached:
+    /// - every Control alike at 0, 0.1, 0.5, 0.9 and 1;
+    /// - each Control in turn at those five values and at `SCAN_STALL_ROTATION_BITS`, the others
+    ///   at their defaults;
+    /// - every combination of the ends 0 and 1 (128 for seven Controls);
+    /// - positions drawn uniformly from the 2^24 rotations k / 2^24 by a fixed pseudo-random
+    ///   sequence (SplitMix64), one draw per Control, up to the bound.
+    fn scan_positions() -> Vec<Vec<f32>> {
         const GRID: [f32; 5] = [0.0, 0.1, 0.5, 0.9, 1.0];
-        const MAX_COMBINATIONS: usize = 125;
         let controls = model::CONTROLS.len();
-        if controls <= 3 {
-            let count = GRID.len().pow(controls as u32);
-            return (0..count)
-                .map(|k| {
-                    (0..controls)
-                        .map(|c| GRID[k / GRID.len().pow(c as u32) % GRID.len()])
-                        .collect()
+        if controls == 0 {
+            return vec![Vec::new()];
+        }
+        assert!(controls <= 8, "the corner combinations alone would pass the bound");
+        let defaults: Vec<f32> = model::CONTROLS.iter().map(|c| c.default).collect();
+        let stall = f32::from_bits(SCAN_STALL_ROTATION_BITS);
+        let mut positions: Vec<Vec<f32>> = GRID.iter().map(|&g| vec![g; controls]).collect();
+        for control in 0..controls {
+            for value in GRID.into_iter().chain([stall]) {
+                let mut position = defaults.clone();
+                position[control] = value;
+                positions.push(position);
+            }
+        }
+        for corner in 0..1usize << controls {
+            positions.push((0..controls).map(|c| (corner >> c & 1) as f32).collect());
+        }
+        // Same bit pattern, same position; no rotation here is NaN or -0.
+        let key = |p: &Vec<f32>| p.iter().map(|r| r.to_bits()).collect::<Vec<u32>>();
+        let mut seen = std::collections::HashSet::new();
+        positions.retain(|p| seen.insert(key(p)));
+        assert!(positions.len() <= SCAN_MAX_POSITIONS);
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        // Bounded: a draw repeats an earlier position with probability under 2^-12 per Control.
+        for _ in 0..2 * SCAN_MAX_POSITIONS {
+            if positions.len() == SCAN_MAX_POSITIONS {
+                break;
+            }
+            let position: Vec<f32> = (0..controls)
+                .map(|_| {
+                    state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                    let mut x = state;
+                    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                    x ^= x >> 31;
+                    (x >> 40) as f32 / (1u32 << 24) as f32
                 })
                 .collect();
+            if seen.insert(key(&position)) {
+                positions.push(position);
+            }
         }
-        let mut grid: Vec<Vec<f32>> = GRID.iter().map(|&g| vec![g; controls]).collect();
-        let mut state = 0x9E37_79B9_7F4A_7C15u64;
-        while grid.len() < MAX_COMBINATIONS {
-            grid.push(
-                (0..controls)
-                    .map(|_| {
-                        state = state
-                            .wrapping_mul(6_364_136_223_846_793_005)
-                            .wrapping_add(1_442_695_040_888_963_407);
-                        GRID[(state >> 33) as usize % GRID.len()]
-                    })
-                    .collect(),
-            );
+        assert_eq!(positions.len(), SCAN_MAX_POSITIONS);
+        positions
+    }
+
+    #[test]
+    fn scan_positions_are_bounded_fixed_and_cover_the_named_ones() {
+        let positions = scan_positions();
+        assert_eq!(positions, scan_positions(), "the same positions on every run");
+        let controls = model::CONTROLS.len();
+        if controls == 0 {
+            assert_eq!(positions, vec![Vec::<f32>::new()]);
+            return;
         }
-        grid
+        assert_eq!(positions.len(), SCAN_MAX_POSITIONS);
+        assert!(positions
+            .iter()
+            .all(|p| p.len() == controls && p.iter().all(|r| (0.0..=1.0).contains(r))));
+        let defaults: Vec<f32> = model::CONTROLS.iter().map(|c| c.default).collect();
+        for control in 0..controls {
+            let mut stall = defaults.clone();
+            stall[control] = f32::from_bits(SCAN_STALL_ROTATION_BITS);
+            assert!(positions.contains(&stall), "Control {control} at the stall rotation");
+            for end in [0.0f32, 1.0] {
+                assert!(positions.contains(&vec![end; controls]));
+            }
+            // The drawn positions are spread over the travel: every sixteenth of it is visited.
+            for bin in 0..16 {
+                assert!(
+                    positions.iter().any(|p| (p[control] * 16.0) as usize == bin),
+                    "Control {control} never lands in sixteenth {bin}"
+                );
+            }
+        }
     }
 
     /// What a return to rest does once a Control has moved, for every Control of this Project's
@@ -2065,46 +2129,97 @@ mod tests {
         }
     }
 
-    /// Room the measurement must leave under each bound, in every Project. The step's is small:
-    /// the Class A Transistor Drive's last step reaches 0.37 of `MAX_DC_STEP`.
+    /// Room the measurement must leave under each bound, in every Project.
     const DC_STEP_HEADROOM: f64 = 2.0;
     const DC_RESIDUAL_HEADROOM: f64 = 30.0;
     const PIN_HEADROOM: f64 = 50.0;
 
-    /// Every combination in `control_grid`, at the factor the Processor uses for each base rate:
-    /// the Model's Circuit is accepted by the constructor's checks with room to spare. Prints the
-    /// worst last Newton step, DC residual and pin distance, which is what `MAX_DC_STEP`,
-    /// `MAX_DC_RESIDUAL` and `MAX_PIN_VOLTS` are set from. Up to 500 DC solves: minutes without
-    /// optimization, so run it with `cargo test --release -p dsp -- --ignored --nocapture
-    /// dc_bounds`. The plain test run still builds the Model at both ends of every Control, in
-    /// `processor::tests::silence_stays_at_rest`.
+    /// Every position of `scan_positions`, at the factor the Processor uses for each base rate:
+    /// the Model's Circuit is accepted by the constructor's checks with room to spare. Each
+    /// position goes through `Circuit::new`, so the constructor's own asserts run on it. Prints
+    /// the worst last Newton step, DC residual and pin distance with the positions they occurred
+    /// at, which is what `MAX_DC_STEP`, `MAX_DC_RESIDUAL` and `MAX_PIN_VOLTS` are set from. Up to
+    /// `4 * SCAN_MAX_POSITIONS` Circuits, each solved twice, spread over the machine's cores:
+    /// run it with `cargo test --release -p dsp -- --ignored --nocapture dc_bounds`. Measured on
+    /// 16 cores with other work running: 4 s for a Model with no Control, 11 s to 94 s for five
+    /// of the Models, and about 10 minutes each for the Green Diode Overdrive and the Four Stage
+    /// Sustainer, whose DC solves use all their iterations. The plain test run still builds the
+    /// Model at both ends of every Control, in `processor::tests::silence_stays_at_rest`.
     #[test]
     #[ignore]
     fn dc_bounds_over_controls_and_rates() {
-        let grid = control_grid();
-        assert!(!grid.is_empty() && grid.len() <= 125);
+        let positions = scan_positions();
+        assert!(!positions.is_empty() && positions.len() <= SCAN_MAX_POSITIONS);
+        let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
+        let chunk = positions.len().div_ceil(workers);
+        // Largest of each measurement with the position it occurred at.
+        type Worst = [(f64, usize); 3];
+        let larger = |a: (f64, usize), b: (f64, usize)| if b.0 > a.0 || b.0.is_nan() { b } else { a };
+        let mut overall: Worst = [(0.0, 0); 3];
         for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
             let circuit_rate = rate * crate::oversample::factor_for(rate) as f64;
-            let (mut step, mut residual, mut pin) = (0.0f64, 0.0f64, 0.0f64);
-            for rotations in &grid {
-                let n = model_netlist(rotations);
-                let mut c = Circuit::new(n.elements, (n.output, 0), circuit_rate);
-                residual = residual.max(c.dc_residual());
-                step = step.max(c.solve_operating_point());
-                // The constructor pinned `lin`; build it again without the pin to measure it.
-                c.update();
-                pin = pin.max(c.pin_operating_point());
-            }
+            let worst: Worst = std::thread::scope(|scope| {
+                let handles: Vec<_> = positions
+                    .chunks(chunk)
+                    .enumerate()
+                    .map(|(k, part)| {
+                        scope.spawn(move || {
+                            let mut worst: Worst = [(0.0, 0); 3];
+                            for (offset, rotations) in part.iter().enumerate() {
+                                let at = k * chunk + offset;
+                                let n = model_netlist(rotations);
+                                let mut c = Circuit::new(n.elements, (n.output, 0), circuit_rate);
+                                let residual = c.dc_residual();
+                                let step = c.solve_operating_point();
+                                // The constructor pinned `lin`; build it again without the pin
+                                // to measure it.
+                                c.update();
+                                let pin = c.pin_operating_point();
+                                for (w, value) in worst.iter_mut().zip([step, residual, pin]) {
+                                    *w = larger(*w, (value, at));
+                                }
+                            }
+                            worst
+                        })
+                    })
+                    .collect();
+                let mut worst: Worst = [(0.0, 0); 3];
+                for handle in handles {
+                    let part = handle.join().expect("a position failed a constructor check");
+                    for (w, p) in worst.iter_mut().zip(part) {
+                        *w = larger(*w, p);
+                    }
+                }
+                worst
+            });
+            let [step, residual, pin] = worst;
             println!(
-                "{rate} Hz, {} combinations: last Newton step {step:e}, DC residual {residual:e}, pin {pin:e} V",
-                grid.len()
+                "{rate} Hz, {} positions: last Newton step {:e} at {:?}, DC residual {:e} at {:?}, pin {:e} V at {:?}",
+                positions.len(),
+                step.0,
+                positions[step.1],
+                residual.0,
+                positions[residual.1],
+                pin.0,
+                positions[pin.1]
             );
-            assert!(step < MAX_DC_STEP / DC_STEP_HEADROOM, "last Newton step {step}");
-            assert!(
-                residual < MAX_DC_RESIDUAL / DC_RESIDUAL_HEADROOM,
-                "DC residual {residual}"
-            );
-            assert!(pin < MAX_PIN_VOLTS / PIN_HEADROOM, "pin distance {pin} V");
+            for (o, w) in overall.iter_mut().zip(worst) {
+                *o = larger(*o, w);
+            }
         }
+        let [step, residual, pin] = overall.map(|w| w.0);
+        println!(
+            "worst of all: last Newton step {step:e} ({:.0}x under the bound), DC residual {residual:e} ({:.0}x), \
+             pin {pin:e} V ({:.0}x)",
+            MAX_DC_STEP / step,
+            MAX_DC_RESIDUAL / residual,
+            MAX_PIN_VOLTS / pin
+        );
+        assert!(step < MAX_DC_STEP / DC_STEP_HEADROOM, "last Newton step {step}");
+        assert!(
+            residual < MAX_DC_RESIDUAL / DC_RESIDUAL_HEADROOM,
+            "DC residual {residual}"
+        );
+        assert!(pin < MAX_PIN_VOLTS / PIN_HEADROOM, "pin distance {pin} V");
     }
 }
