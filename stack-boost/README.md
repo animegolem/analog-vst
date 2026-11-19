@@ -4,7 +4,7 @@ A stereo plugin modeled after the Tonemender circuit by runoffgroove.com (v1.0, 
 
 **Nothing was measured on hardware.** Validation compares the Rust model with an ngspice simulation of the same simplified circuit. The source page publishes no frequency-response curves, so there is no measured response to compare the transcription against either.
 
-**Status: every setting passes a Full Validation** (2026-11-17, ngspice 45, the third of three runs; the first failed, see "Validation"). Cost: 9.5% of one core per stereo instance at 48 kHz. The model has no rail clipping: some inputs below full scale would clip in the hardware and pass cleanly here, see "Op-amp output check".
+**Status: every setting passes a Full Validation** (2026-11-17, ngspice 45, the third of three runs; the first failed, see "Validation"). That run used the Solver as it was before the shared Solver was carried in on 2026-11-19; none has been run since (see "Shared Solver"). Cost: 9.5% of one core per stereo instance at 48 kHz. The model has no rail clipping: some inputs below full scale would clip in the hardware and pass cleanly here, see "Op-amp output check".
 
 ## Validation
 

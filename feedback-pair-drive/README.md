@@ -4,7 +4,7 @@ A stereo plugin modeled after the Music Thing Modular London Drive circuit (Prot
 
 The Circuit has four transistors. A long-tailed NPN pair (Q6, Q7) and a PNP second stage (Q3) form an inverting feedback amplifier with a 100k feedback resistor. An NPN phase splitter (Q5) with equal 2.7k collector and emitter resistors follows it. There is one Control, Level.
 
-**Status: validated, all Checks pass at all four Settings, with no held sample in the Pack** (Full Validation of the current Solver, SPICE references from ngspice 45). Both bundles were built and installed after that run. The Plugin is **Offline-only**: it costs 172.7% of one core per stereo instance at 48 kHz on the test machine, so it can be bounced or frozen but not played live there.
+**Status: validated, all Checks pass at all four Settings, with no held sample in the Pack** (Full Validation of the Solver as it was before the shared Solver was carried in on 2026-11-19, SPICE references from ngspice 45; none has been run since, see "Shared Solver"). Both bundles were built and installed after that run. The Plugin is **Offline-only**: it costs 172.7% of one core per stereo instance at 48 kHz on the test machine, so it can be bounced or frozen but not played live there.
 
 **Nothing was measured on hardware.** Validation compares two simplified descriptions of one Circuit: `reference/circuit.cir` (ngspice) and `dsp/src/model.rs`. No unit was measured and no recording was consulted.
 

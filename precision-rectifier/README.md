@@ -12,7 +12,9 @@ the Netlist in `reference/circuit.cir`, simulated by ngspice, and the Model in `
 
 **Status: all-PASS in a Full Validation** (2026-11-17, one Setting, ngspice 45), with both
 captures compared at their known alignment. An earlier Full Validation the same day also passed,
-but it compared the captures through a shifted window and is superseded. See "Validation". Cost
+but it compared the captures through a shifted window and is superseded. See "Validation". Both
+used the Solver as it was before the shared Solver was carried in on 2026-11-19; none has been
+run since (see "Shared Solver"). Cost
 is about one core per stereo instance at 48 kHz, so treat the Plugin as Offline-only: bounce or
 freeze it. See "Cost".
 

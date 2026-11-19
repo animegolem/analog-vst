@@ -53,8 +53,8 @@ const GMIN: f64 = 1e-12;
 /// positions of its one Control), Four Stage Sustainer 3.2e-9, Green Diode Overdrive 1.7e-9,
 /// Three-Band Stack Boost 4.1e-10, Feedback Pair Drive 7.9e-13, Three-Transistor Drive 3.3e-13,
 /// Seven Band Graphic and Precision Rectifier 0. The bound is 2.7 times the worst of them and at
-/// least 30 times each of the other seven. The first four never reach the 1e-12 at which the
-/// loop stops early.
+/// least 30 times each of the other seven. At their worst combination the first four do not
+/// reach the 1e-12 at which the loop stops early.
 const MAX_DC_STEP: f64 = 1e-7;
 
 /// Largest `dc_residual` at which the operating point counts as a solution of the DC equations.

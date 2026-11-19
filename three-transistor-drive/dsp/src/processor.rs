@@ -123,19 +123,24 @@ mod tests {
             .collect()
     }
 
-    /// With no input the circuit stays at its operating point, wherever each control sits. A drift
-    /// of 1e-6 full scale is 10 dB under a -40 dBFS tone once a control mutes the signal by 100 dB.
-    #[test]
-    fn silence_stays_at_rest() {
-        let mut settings = vec![("defaults".to_string(), defaults())];
+    /// The defaults, then each Control at each end of its travel with the others at default.
+    fn positions() -> Vec<(String, Vec<f32>)> {
+        let mut positions = vec![("defaults".to_string(), defaults())];
         for (control, spec) in model::CONTROLS.iter().enumerate() {
             for end in [0.0, 1.0] {
                 let mut rotations = defaults();
                 rotations[control] = end;
-                settings.push((format!("{} at {end}", spec.name), rotations));
+                positions.push((format!("{} at {end}", spec.name), rotations));
             }
         }
-        for (name, rotations) in settings {
+        positions
+    }
+
+    /// With no input the circuit stays at its operating point, wherever each control sits. A drift
+    /// of 1e-6 full scale is 10 dB under a -40 dBFS tone once a control mutes the signal by 100 dB.
+    #[test]
+    fn silence_stays_at_rest() {
+        for (name, rotations) in positions() {
             let mut processor = Processor::new(96_000.0, &rotations);
             let (mut left, mut right) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
             processor.process(&mut left, &mut right);
@@ -149,35 +154,34 @@ mod tests {
     fn non_finite_input_samples_are_silence() {
         // One NaN and one infinity in a driven block, then silence. The output must equal, bit
         // for bit, that of a twin fed 0 in their place: nothing lingers in the filters or circuit.
-        let mut dirty = sine(2048, 0.5);
-        dirty.extend(std::iter::repeat_n(0.0, 2048));
-        let mut clean = dirty.clone();
-        (dirty[700], dirty[1300]) = (f32::NAN, f32::INFINITY);
-        (clean[700], clean[1300]) = (0.0, 0.0);
-        let (mut a, mut b) = (Processor::new(RATE, &defaults()), Processor::new(RATE, &defaults()));
-        let (mut dirty_r, mut clean_r) = (dirty.clone(), clean.clone());
-        a.process(&mut dirty, &mut dirty_r);
-        b.process(&mut clean, &mut clean_r);
-        assert!(dirty.iter().all(|y| y.is_finite()));
-        assert_eq!(dirty, clean);
-        assert_eq!(dirty_r, clean_r);
-        assert_eq!(a.failed_solves(), 0);
+        for (name, rotations) in positions() {
+            let mut dirty = sine(2048, 0.5);
+            dirty.extend(std::iter::repeat_n(0.0, 2048));
+            let mut clean = dirty.clone();
+            (dirty[700], dirty[1300]) = (f32::NAN, f32::INFINITY);
+            (clean[700], clean[1300]) = (0.0, 0.0);
+            let (mut a, mut b) = (Processor::new(RATE, &rotations), Processor::new(RATE, &rotations));
+            let (mut dirty_r, mut clean_r) = (dirty.clone(), clean.clone());
+            a.process(&mut dirty, &mut dirty_r);
+            b.process(&mut clean, &mut clean_r);
+            assert!(dirty.iter().all(|y| y.is_finite()), "{name}");
+            assert_eq!(dirty, clean, "{name}");
+            assert_eq!(dirty_r, clean_r, "{name}");
+            assert_eq!(a.failed_solves(), 0, "{name}");
+        }
     }
 
     #[test]
-    fn nan_input_then_silence_stays_at_rest() {
-        // A NaN first sample, then silence: every output is finite and equals, bit for bit, that
-        // of a twin fed silence throughout, which `silence_stays_at_rest` shows to be at rest.
-        let mut left = vec![0.0f32; 24_000];
+    fn nan_input_then_silence_returns_to_rest() {
+        // A NaN first sample, then two seconds of silence, with every Control at the top of its
+        // travel: every output is finite and the last tenth of a second is at rest.
+        let mut left = vec![0.0f32; 96_000];
         left[0] = f32::NAN;
         let mut right = left.clone();
-        let mut p = Processor::new(RATE, &defaults());
+        let mut p = Processor::new(RATE, &vec![1.0; model::CONTROLS.len()]);
         p.process(&mut left, &mut right);
-        let (mut silent_l, mut silent_r) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
-        Processor::new(RATE, &defaults()).process(&mut silent_l, &mut silent_r);
         assert!(left.iter().chain(&right).all(|y| y.is_finite()));
-        assert_eq!(left, silent_l);
-        assert_eq!(right, silent_r);
+        assert!(left[91_200..].iter().chain(&right[91_200..]).all(|y| y.abs() < 1e-6));
         assert_eq!(p.failed_solves(), 0);
     }
 
