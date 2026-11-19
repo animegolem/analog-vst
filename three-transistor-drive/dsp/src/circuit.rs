@@ -1599,10 +1599,13 @@ mod tests {
         let mut c = Circuit::new(els, (3, 0), 96_000.0);
         let op = c.operating_point().to_vec();
         let (vb, vc) = (op[1], op[2]);
-        assert!(vb > 8.0 && vb < 8.6, "emitter-base junction is forward biased: vb={vb}");
         assert!(
-            vc > 0.5 && vc < 8.0,
-            "forward-active, collector between the rails: vc={vc}"
+            vb < 9.0 - 0.5 && vb > 9.0 - 0.8,
+            "emitter-base junction is forward biased: vb={vb}"
+        );
+        assert!(
+            vc > 0.5 && vc < vb,
+            "forward-active, collector between ground and the base: vc={vc}"
         );
         let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
         Device::Bjt {
@@ -1610,7 +1613,9 @@ mod tests {
             polarity: -1.0,
         }
         .eval(&[vc - 9.0, vb - 9.0], &mut i, &mut j);
-        // Port currents flow from collector (and base) into the emitter node; both are negative.
+        // Port currents are counted into the collector and into the base, so both are negative
+        // for a PNP.
+        assert!(i[0] < 0.0 && i[1] < 0.0, "collector {} A, base {} A", i[0], i[1]);
         assert!((vc / 4.7e3 + i[0]).abs() < 1e-12, "collector KCL");
         assert!((vb / 4.7e6 + i[1]).abs() < 1e-12, "base KCL");
         for _ in 0..1000 {
@@ -1888,7 +1893,7 @@ mod tests {
         let (mut faulty, _) = follower_solved_with_fault(100e-9);
         let bias_error = faulty.operating_point[bias - 1] - correct.operating_point[bias - 1];
         assert!(
-            (bias_error - 0.5e-3).abs() < 0.02e-3,
+            (bias_error - 0.5e-3).abs() < 0.01e-3,
             "100 nA moved the bias by {bias_error} V"
         );
         let residual = faulty.dc_residual();
@@ -2129,8 +2134,12 @@ mod tests {
         }
     }
 
-    /// Room the measurement must leave under each bound, in every Project.
-    const DC_STEP_HEADROOM: f64 = 2.0;
+    /// Room the measurement must leave under each bound, in every Project. Measured over
+    /// `scan_positions`, the least room on the step is 50 times (Green Diode Overdrive) and on
+    /// the pin distance 87 times (the same). The residual's is set by the Class A Transistor
+    /// Drive, which leaves 36 times; the next are the Four Stage Sustainer at 180 and the
+    /// Feedback Pair Drive at 669, and the other five leave more than 1000.
+    const DC_STEP_HEADROOM: f64 = 10.0;
     const DC_RESIDUAL_HEADROOM: f64 = 30.0;
     const PIN_HEADROOM: f64 = 50.0;
 

@@ -152,21 +152,26 @@ mod tests {
 
     #[test]
     fn non_finite_input_samples_are_silence() {
-        // One NaN and one infinity in a driven block, then silence. The output must equal, bit
-        // for bit, that of a twin fed 0 in their place: nothing lingers in the filters or circuit.
+        // A NaN and both infinities in a driven block, at different places in the two channels,
+        // then silence. The output must equal, bit for bit, that of a twin fed 0 in their place:
+        // nothing lingers in the filters or circuit, and neither channel leaks into the other.
         for (name, rotations) in positions() {
-            let mut dirty = sine(2048, 0.5);
-            dirty.extend(std::iter::repeat_n(0.0, 2048));
-            let mut clean = dirty.clone();
-            (dirty[700], dirty[1300]) = (f32::NAN, f32::INFINITY);
-            (clean[700], clean[1300]) = (0.0, 0.0);
+            let mut clean = sine(2048, 0.5);
+            clean.extend(std::iter::repeat_n(0.0, 2048));
+            let (mut dirty, mut dirty_r, mut clean_r) = (clean.clone(), clean.clone(), clean.clone());
+            for (at, bad) in [(700, f32::NAN), (1300, f32::INFINITY), (1301, f32::NEG_INFINITY)] {
+                (dirty[at], clean[at]) = (bad, 0.0);
+            }
+            for (at, bad) in [(0, f32::NAN), (1000, f32::NEG_INFINITY), (3000, f32::INFINITY)] {
+                (dirty_r[at], clean_r[at]) = (bad, 0.0);
+            }
             let (mut a, mut b) = (Processor::new(RATE, &rotations), Processor::new(RATE, &rotations));
-            let (mut dirty_r, mut clean_r) = (dirty.clone(), clean.clone());
             a.process(&mut dirty, &mut dirty_r);
             b.process(&mut clean, &mut clean_r);
-            assert!(dirty.iter().all(|y| y.is_finite()), "{name}");
-            assert_eq!(dirty, clean, "{name}");
-            assert_eq!(dirty_r, clean_r, "{name}");
+            assert!(dirty.iter().chain(&dirty_r).all(|y| y.is_finite()), "{name}");
+            let bits = |v: &[f32]| v.iter().map(|y| y.to_bits()).collect::<Vec<u32>>();
+            assert_eq!(bits(&dirty), bits(&clean), "{name}");
+            assert_eq!(bits(&dirty_r), bits(&clean_r), "{name}");
             assert_eq!(a.failed_solves(), 0, "{name}");
         }
     }
