@@ -84,12 +84,33 @@ fn run(args: &[String]) -> Result<(), String> {
         right.extend(std::iter::repeat_n(0.0, latency));
     }
     processor.process(&mut left, &mut right);
-    // A held sample is not the Circuit's response; do not write a capture that contains one.
+    // A held sample is not the Circuit's response, and a sample that is not finite is no sample
+    // (the Processor's f64 output can overflow the f32 it is written as): do not write a capture
+    // that contains either. A file already at the output path would then pass for this capture,
+    // so it is removed: that one path only, and never the input file.
     let failed = processor.failed_solves();
-    if failed > 0 {
-        return Err(format!(
-            "the solver failed on {failed} circuit-rate samples and held them; no output written"
-        ));
+    let non_finite = left.iter().chain(&right).filter(|y| !y.is_finite()).count();
+    if failed > 0 || non_finite > 0 {
+        let mut message = String::new();
+        if failed > 0 {
+            message = format!("the solver failed on {failed} circuit-rate samples and held them; ");
+        }
+        if non_finite > 0 {
+            message += &format!("{non_finite} output samples are not finite; ");
+        }
+        message += "no output written";
+        let is_input = match (std::fs::canonicalize(input), std::fs::canonicalize(output)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if is_input {
+            return Err(message + "; the output path is the input file, which is left in place");
+        }
+        return Err(match std::fs::remove_file(output) {
+            Ok(()) => message + &format!("; removed the earlier file at {output}"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => message,
+            Err(e) => message + &format!("; an earlier {output} could not be removed: {e}"),
+        });
     }
 
     let out_spec = hound::WavSpec {

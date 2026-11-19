@@ -7,7 +7,7 @@ Run from anywhere: python3 tools/check-shared.py
 Not in the list, on purpose:
 - dsp/src/model.rs is the Circuit, per Project.
 - dsp/src/oversample.rs holds the per-Project MIN_CIRCUIT_RATE and the tests that follow it.
-- render/tests/ holds tests that need an input that fails on one Circuit.
+- render/tests/ otherwise holds tests that need an input that fails on one Circuit.
 - harness/, validate.sh and install.sh are outside the Solver.
 - template-check/ is the unmodified template, kept as the baseline.
 """
@@ -39,6 +39,7 @@ SHARED = [
     "plugin/src/lib.rs",
     "render/Cargo.toml",
     "render/src/main.rs",
+    "render/tests/refused_capture.rs",
 ]
 
 
