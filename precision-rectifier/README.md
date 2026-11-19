@@ -310,6 +310,10 @@ Not legal advice.
 - No patent search was done. The circuit is a textbook two-op-amp precision rectifier.
 - The template is MIT. VST3 binaries built with nih-plug are GPLv3.
 
+## Shared Solver (carried in 2026-11-19; Full Validation pending)
+
+`dsp/src/circuit.rs`, `netlist.rs`, `processor.rs` and `render/src/main.rs` are now the same files in all eight Projects; `tools/check-shared.py` at the repository root fails when a copy drifts. The single-diode law this Project introduced is in the shared file unchanged. This Circuit takes the joint Newton solve, which changes here: each junction's step is limited as SPICE does, the bound is 200 iterations instead of 64, and a sample that does not converge is held, counted and refused by `render` where the earlier Solver committed it. Also new: the DC operating point check and rest-state pin (the operating point is 0 V, so the pin changes nothing), a return to rest after 1024 held samples in a row, and rejection of non-finite input. Compared by rendering six short inputs (silence, 1 kHz at -12 and 0 dBFS, 5 kHz at 0 dBFS, 200 Hz at +12 dBFS, a 0 dBFS sweep) at the one Setting through the `render` of the commit before the carry and through the new one: all six renders are bit-identical and no sample was held, nor in eight harder ones (up to +20 dBFS, to 20 kHz, noise). The validation figures in this README were measured with the earlier Solver. **No Full Validation has been run with the shared Solver.**
+
 ## Build
 
 ```sh

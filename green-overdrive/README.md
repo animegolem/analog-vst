@@ -57,6 +57,10 @@ What this run does not show:
 
 Cost: 30.7% of one core per stereo instance at 48 kHz (`cargo run -q --release --example bench -p dsp 48000`, one trial on an Apple M3 Max, no other validation or benchmark running, load averages 5.03, 16.14 and 24.41 over 1, 5 and 15 minutes). The Circuit runs at 576 kHz or above.
 
+## Shared Solver (carried in 2026-11-19; Full Validation pending)
+
+`dsp/src/circuit.rs`, `netlist.rs`, `processor.rs` and `render/src/main.rs` are now the same files in all eight Projects; `tools/check-shared.py` at the repository root fails when a copy drifts. This Project already had the DC operating point check and the rest-state pin. It gains: a sample whose solve does not converge or is not finite is held, counted and refused by `render`; after 1024 held samples in a row the circuit goes back to the operating point solved at construction; non-finite input samples and NaN Control values are rejected. This Circuit is solved one device at a time in one round, and that path now reports convergence too. The pin now corrects each row in the order the per-sample code sums it. Compared by rendering six short inputs (silence, 1 kHz at -12 and 0 dBFS, 5 kHz at 0 dBFS, 200 Hz at +12 dBFS, a 0 dBFS sweep) at every Setting through the `render` of the commit before the carry and through the new one: the largest difference is -126.4 dBFS (one unit in the last place of a 32-bit sample at a +14.6 dBFS peak), from the change to the pin; before that change the 24 renders were bit-identical. No sample was held in those renders or in eight harder ones per Setting (up to +20 dBFS, to 20 kHz, noise). A return to rest after Tone has moved restores a state 22 microvolts from the present operating point and costs the same 7.6 microvolt output transient as the Tone change itself (unit test, forced). The validation figures in this README were measured with the earlier Solver. **No Full Validation has been run with the shared Solver.**
+
 ## Assumptions
 
 `reference/circuit.cir` lists them with the sources. In short:
