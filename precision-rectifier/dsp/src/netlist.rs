@@ -19,6 +19,7 @@ pub struct DiodeModel {
 }
 
 /// SPICE Gummel-Poon `NPN`/`PNP` parameters used by the solver (charge storage and leakage omitted).
+/// `rb`, `rc` and `re` of exactly 0 add no resistor and no internal node, as in ngspice.
 #[derive(Clone, Copy, Debug)]
 pub struct BjtModel {
     pub is: f64,
@@ -171,9 +172,19 @@ impl Netlist {
         self.bjt(c, b, e, m, true);
     }
 
+    /// A transistor with its terminal resistances. A resistance of exactly 0 adds no resistor and
+    /// no internal node: the device terminal is the external node, as in ngspice (RB, RC or RE of
+    /// 0 each leave out one internal node there). A 1 milliohm stand-in is not harmless: its
+    /// 1000 S puts terms of thousands of amperes into a Kirchhoff row, and their rounding stops
+    /// the DC solve short of convergence.
     fn bjt(&mut self, c: &str, b: &str, e: &str, m: BjtModel, pnp: bool) {
+        for ohms in [m.rb, m.rc, m.re] {
+            assert!(ohms >= 0.0, "a terminal resistance is not negative or NaN: {ohms}");
+        }
         let (c, b, e) = (self.node(c), self.node(b), self.node(e));
-        let (ci, bi, ei) = (self.fresh(), self.fresh(), self.fresh());
+        let ci = if m.rc == 0.0 { c } else { self.fresh() };
+        let bi = if m.rb == 0.0 { b } else { self.fresh() };
+        let ei = if m.re == 0.0 { e } else { self.fresh() };
         let model = Bjt {
             is: m.is,
             bf: m.bf,
@@ -182,26 +193,27 @@ impl Netlist {
             ikf: m.ikf,
             vt: VT,
         };
-        self.elements.extend([
-            Element::Resistor(b, bi, m.rb.max(1e-3)),
-            Element::Resistor(c, ci, m.rc.max(1e-3)),
-            Element::Resistor(ei, e, m.re.max(1e-3)),
-            if pnp {
-                Element::Pnp {
-                    c: ci,
-                    b: bi,
-                    e: ei,
-                    model,
-                }
-            } else {
-                Element::Npn {
-                    c: ci,
-                    b: bi,
-                    e: ei,
-                    model,
-                }
-            },
-        ]);
+        for (external, internal, ohms) in [(b, bi, m.rb), (c, ci, m.rc), (ei, e, m.re)] {
+            if ohms != 0.0 {
+                self.elements
+                    .push(Element::Resistor(external, internal, ohms.max(1e-3)));
+            }
+        }
+        self.elements.push(if pnp {
+            Element::Pnp {
+                c: ci,
+                b: bi,
+                e: ei,
+                model,
+            }
+        } else {
+            Element::Npn {
+                c: ci,
+                b: bi,
+                e: ei,
+                model,
+            }
+        });
     }
 
     /// Op-amp with ideal output, inputs drawing no current, no rail clipping.
@@ -227,5 +239,55 @@ impl Netlist {
                 gain: 1.0,
             },
         ]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_terminal_resistance_of_zero_adds_no_resistor_and_no_node() {
+        let with = |rb: f64, rc: f64, re: f64| {
+            let mut n = Netlist::default();
+            n.npn("c", "b", "e", BjtModel { rb, rc, re, ..Q2N3904 });
+            n
+        };
+        // All three present: three resistors, three internal nodes, in this order.
+        let mut all = with(20.0, 0.1, 0.1);
+        let (c, b, e) = (all.node("c"), all.node("b"), all.node("e"));
+        assert_eq!(all.names.len(), 6);
+        assert!(
+            matches!(all.elements[..], [
+                Element::Resistor(b0, 5, 20.0),
+                Element::Resistor(c0, 4, 0.1),
+                Element::Resistor(6, e0, 0.1),
+                Element::Npn { c: 4, b: 5, e: 6, .. },
+            ] if (c0, b0, e0) == (c, b, e)),
+            "{:?}",
+            all.elements
+        );
+        // RE = 0: the device emitter is the external node.
+        let mut no_re = with(20.0, 0.1, 0.0);
+        let e = no_re.node("e");
+        assert_eq!(no_re.names.len(), 5);
+        assert!(
+            matches!(no_re.elements[..], [
+                Element::Resistor(_, 5, 20.0),
+                Element::Resistor(_, 4, 0.1),
+                Element::Npn { c: 4, b: 5, e: e0, .. },
+            ] if e0 == e),
+            "{:?}",
+            no_re.elements
+        );
+        // All zero: the device alone, on the external nodes.
+        let mut none = with(0.0, 0.0, 0.0);
+        let (c, b, e) = (none.node("c"), none.node("b"), none.node("e"));
+        assert_eq!(none.names.len(), 3);
+        assert!(
+            matches!(none.elements[..], [Element::Npn { c: c0, b: b0, e: e0, .. }] if (c0, b0, e0) == (c, b, e)),
+            "{:?}",
+            none.elements
+        );
     }
 }

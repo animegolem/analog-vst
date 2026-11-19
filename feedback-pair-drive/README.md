@@ -63,7 +63,7 @@ Each of these is a choice, not a sourced fact.
 - **Pot rotation: clockwise = more gain.** The schematic does not state it. The pot symbol carries a small arrow toward the R1 end, which supports this if it is the usual clockwise marker. That convention was not confirmed.
 - **Full scale: 5 V peak = 0 dBFS**, in and out. The clipped output reaches -6.8 V, so the output can exceed full scale by up to 2.7 dB.
 - **Which parts are fitted** is unknown; the schematic names no manufacturer. The onsemi (Fairchild) MMBTH10 and Nexperia BC858B models are assumed. A second onsemi MMBTH10 model (MMBTH10LT1) gives 35.23 dB at Level 1 against 35.45 dB for the first, both used in full.
-- **MMBTH10 RE: 0.** The published model gives none; 0 is the SPICE default. The Model uses 1 milliohm where the Netlist has 0.
+- **MMBTH10 RE: 0.** The published model gives none; 0 is the SPICE default. The Model, like ngspice, then has no emitter resistor and no internal emitter node.
 - **Capacitors** (C12 2.2u, C5, C6, C7 1u, C13 10n) are ideal and non-polarised, as drawn. No dielectric or tolerance is given.
 - **The schematic's gain note does not agree with its values.** The note says the high input gives 2x to 400x. The drawn values give 0.97x to 60x per output with a 1k source, or 153x with a 0 ohm source. Counting both outputs differentially brings it within a factor of about 1.3; that reading is unconfirmed. The Model follows the drawn values.
 

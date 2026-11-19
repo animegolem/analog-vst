@@ -121,8 +121,9 @@ mod tests {
         let (n, _) = build(0.5);
         let count = |f: fn(&crate::circuit::Element) -> bool| n.elements.iter().filter(|e| f(e)).count();
         use crate::circuit::Element as E;
-        // 13 circuit resistors (9 fixed, pot, source, two loads) plus RB, RC, RE of 4 transistors.
-        assert_eq!(count(|e| matches!(e, E::Resistor(..))), 13 + 12);
+        // 13 circuit resistors (9 fixed, pot, source, two loads), RB and RC of 4 transistors, and
+        // the RE of the one transistor that has it (the three MMBTH10 have RE = 0: no resistor).
+        assert_eq!(count(|e| matches!(e, E::Resistor(..))), 13 + 8 + 1);
         assert_eq!(count(|e| matches!(e, E::Capacitor(..))), 5);
         assert_eq!(count(|e| matches!(e, E::Npn { .. })), 3);
         assert_eq!(count(|e| matches!(e, E::Pnp { .. })), 1);
@@ -150,8 +151,11 @@ mod tests {
     #[test]
     fn operating_point_matches_ngspice() {
         // First use of the Solver's PNP path in a Model: Q3's operating point sets `c7` and `vo`.
-        // The Solver has no gmin and uses 1 milliohm where the published RE is 0; ngspice prints
-        // six or seven digits. 20 uV covers both on every node.
+        // The Solver has no gmin on the transistors' junctions and a rounded thermal voltage;
+        // ngspice prints six or seven digits. 20 uV covers those on every node. Measured: at
+        // most 12.4 uV (`c7`). RE = 0 adds no resistor, as in ngspice: going from the earlier
+        // 0.001 ohm stand-in to none moved `c5` by -2.236 uV and `e5` by +2.245 uV, and ngspice
+        // moves them by -2.237 and +2.245 uV between RE=1m and RE=0.
         const TOLERANCE_V: f64 = 20e-6;
         let (mut n, c) = build(0.5);
         let op = c.operating_point().to_vec();

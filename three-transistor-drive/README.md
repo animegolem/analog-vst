@@ -59,7 +59,7 @@ Not obtained: sheet 2 of the drawing (the PDF has one page), a parts list, a ven
    - The reduced model runs at a current gain of about 1324 (Q5Q1) and 1331 (Q5Q2) at this bias, above the datasheet's 500 to 1250, because of the Early term. With the complete 2N5088 model the gain is about 424, below the range.
    - VBE at 1 mA is about 0.67 V, just above the datasheet's 0.56 to 0.66 V.
 4. **Q2 model.** The drawing names no maker. The Fairchild 3906 model (S6) is used: IS 1.41 fA, BF 180.7, BR 4.977, VAF 18.7 V, IKF 80 mA, RB 10, RC 2.5.
-5. **RE** is absent from both published models, so 0 (the SPICE default). The Model enters 0.001 ohm.
+5. **RE** is absent from both published models, so 0 (the SPICE default). The Model, like ngspice, then has no emitter resistor and no internal emitter node.
 6. **Source impedance** 1k and **load** 100k on one output. Neither is on the drawing. The negative clip level depends on the load.
 7. **Supply.** Ideal +12 V and -12 V. The hardware's series diodes (D1, D2, 1N5819) lower each rail by a diode drop; that is not modeled.
 8. **Capacitors** are ideal at their marked values. C6 and C7's type, tolerance and ESR are not on the drawing.

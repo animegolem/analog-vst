@@ -121,9 +121,10 @@ mod tests {
 
     /// The model's DC operating point against ngspice 45 on `reference/circuit.cir` (input 0 V;
     /// the bias is the same at every drive value because C3 blocks DC). This is the first circuit
-    /// here with a PNP. The model differs from the netlist in two known ways, both worth a few
-    /// microvolts: its thermal voltage constant is rounded, and RE = 0 is entered as 0.001 ohm.
-    /// Measured: every node within 8 uV.
+    /// here with a PNP. The model differs from the netlist in one known way worth a few
+    /// microvolts: its thermal voltage constant is rounded. RE = 0 adds no resistor, as in
+    /// ngspice. Measured: every node within 8.6 uV (7.4 uV while RE = 0 was entered as 0.001 ohm,
+    /// which hid 1.2 uV of the other difference at `c1`).
     #[test]
     fn operating_point_matches_ngspice() {
         const SPICE: &[(&str, f64)] = &[
