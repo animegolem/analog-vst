@@ -113,10 +113,36 @@ mod tests {
 
     const RATE: f64 = 48_000.0;
 
+    fn defaults() -> Vec<f32> {
+        model::CONTROLS.iter().map(|c| c.default).collect()
+    }
+
     fn sine(len: usize, peak: f32) -> Vec<f32> {
         (0..len)
             .map(|k| peak * (std::f32::consts::TAU * 1000.0 * k as f32 / RATE as f32).sin())
             .collect()
+    }
+
+    /// With no input the circuit stays at its operating point, wherever each control sits. A drift
+    /// of 1e-6 full scale is 10 dB under a -40 dBFS tone once a control mutes the signal by 100 dB.
+    #[test]
+    fn silence_stays_at_rest() {
+        let mut settings = vec![("defaults".to_string(), defaults())];
+        for (control, spec) in model::CONTROLS.iter().enumerate() {
+            for end in [0.0, 1.0] {
+                let mut rotations = defaults();
+                rotations[control] = end;
+                settings.push((format!("{} at {end}", spec.name), rotations));
+            }
+        }
+        for (name, rotations) in settings {
+            let mut processor = Processor::new(96_000.0, &rotations);
+            let (mut left, mut right) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
+            processor.process(&mut left, &mut right);
+            let drift = left.iter().fold(0.0f32, |m, y| m.max((y - left[0]).abs()));
+            assert!(drift < 1e-10, "{name}: drifts by {drift}");
+            assert_eq!(processor.failed_solves(), 0, "{name}");
+        }
     }
 
     #[test]
@@ -128,7 +154,7 @@ mod tests {
         let mut clean = dirty.clone();
         (dirty[700], dirty[1300]) = (f32::NAN, f32::INFINITY);
         (clean[700], clean[1300]) = (0.0, 0.0);
-        let (mut a, mut b) = (Processor::new(RATE, &[1.0]), Processor::new(RATE, &[1.0]));
+        let (mut a, mut b) = (Processor::new(RATE, &defaults()), Processor::new(RATE, &defaults()));
         let (mut dirty_r, mut clean_r) = (dirty.clone(), clean.clone());
         a.process(&mut dirty, &mut dirty_r);
         b.process(&mut clean, &mut clean_r);
@@ -139,33 +165,38 @@ mod tests {
     }
 
     #[test]
-    fn nan_input_then_silence_returns_to_rest() {
-        // A NaN first sample, then two seconds of silence: every output is finite and the last
-        // tenth of a second is at rest.
-        let mut left = vec![0.0f32; 96_000];
+    fn nan_input_then_silence_stays_at_rest() {
+        // A NaN first sample, then silence: every output is finite and equals, bit for bit, that
+        // of a twin fed silence throughout, which `silence_stays_at_rest` shows to be at rest.
+        let mut left = vec![0.0f32; 24_000];
         left[0] = f32::NAN;
         let mut right = left.clone();
-        let mut p = Processor::new(RATE, &[1.0]);
+        let mut p = Processor::new(RATE, &defaults());
         p.process(&mut left, &mut right);
+        let (mut silent_l, mut silent_r) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
+        Processor::new(RATE, &defaults()).process(&mut silent_l, &mut silent_r);
         assert!(left.iter().chain(&right).all(|y| y.is_finite()));
-        assert!(left[91_200..].iter().chain(&right[91_200..]).all(|y| y.abs() < 1e-6));
+        assert_eq!(left, silent_l);
+        assert_eq!(right, silent_r);
         assert_eq!(p.failed_solves(), 0);
     }
 
     #[test]
     fn nan_control_is_rejected_without_a_panic() {
-        // NaN at construction means the default; NaN later keeps the value in force.
-        let mut p = Processor::new(RATE, &[f32::NAN]);
-        assert_eq!(
-            p.plain_controls(),
-            [model::CONTROLS[0].plain(model::CONTROLS[0].default)]
-        );
-        p.set_control(0, 0.9);
-        let before = p.plain_controls().to_vec();
-        p.set_control(0, f32::NAN);
-        assert_eq!(p.plain_controls(), before);
-        p.set_control(0, f32::INFINITY);
-        assert_eq!(p.plain_controls(), [model::CONTROLS[0].plain(1.0)]);
+        // NaN at construction means the default; NaN later keeps the value in force. A Model
+        // with no Controls has nothing to reject and only has to build and run.
+        let all_nan = vec![f32::NAN; model::CONTROLS.len()];
+        let mut p = Processor::new(RATE, &all_nan);
+        let at_default: Vec<f64> = model::CONTROLS.iter().map(|c| c.plain(c.default)).collect();
+        assert_eq!(p.plain_controls(), at_default);
+        for (index, spec) in model::CONTROLS.iter().enumerate() {
+            p.set_control(index, 0.9);
+            assert_eq!(p.plain_controls()[index], spec.plain(0.9));
+            p.set_control(index, f32::NAN);
+            assert_eq!(p.plain_controls()[index], spec.plain(0.9));
+            p.set_control(index, f32::INFINITY);
+            assert_eq!(p.plain_controls()[index], spec.plain(1.0));
+        }
         let (mut left, mut right) = (sine(512, 0.5), sine(512, 0.5));
         p.process(&mut left, &mut right);
         assert!(left.iter().chain(&right).all(|y| y.is_finite()));
