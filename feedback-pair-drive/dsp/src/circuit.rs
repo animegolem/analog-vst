@@ -29,7 +29,8 @@ const SWEEP_TOLERANCE_V: f64 = 1e-12;
 /// Bound on one device's Newton iterations in a per-device solve.
 const DEVICE_MAX_ITERATIONS: usize = 64;
 
-/// Bound on the corrections the pin makes to one row (see `pin_operating_point`).
+/// Bound on the corrections the pin makes to one row (see `pin_operating_point`). The loop
+/// stops earlier only when a row gives the rest value exactly.
 const PIN_MAX_ROUNDS: usize = 4;
 
 /// Conductance standing in for an inductor at DC.
@@ -47,23 +48,28 @@ const GMIN: f64 = 1e-12;
 /// The step cannot be asked to reach zero: the DC equations are evaluated in double precision,
 /// and the steps can stop shrinking first.
 ///
-/// Measured by the test `dc_bounds_over_controls_and_rates` on each of the eight Models (every
-/// Control at 0, 0.1, 0.5, 0.9 and 1, at most 125 combinations, at the Circuit rates of 44.1, 48,
-/// 96 and 192 kHz), the worst last step was: Class A Transistor Drive 3.5e-8 (3.7e-8 over 2001
-/// positions of its one Control), Four Stage Sustainer 3.2e-9, Green Diode Overdrive 1.7e-9,
-/// Three-Band Stack Boost 4.1e-10, Feedback Pair Drive 7.9e-13, Three-Transistor Drive 3.3e-13,
-/// Seven Band Graphic and Precision Rectifier 0. The bound is 2.7 times the worst of them and at
-/// least 30 times each of the other seven. At their worst combination the first four do not
-/// reach the 1e-12 at which the loop stops early.
+/// Measured by the test `dc_bounds_over_controls_and_rates` on each of the eight Models (4096
+/// seeded Control positions, one for the Model with no Control, at the Circuit rates of 44.1, 48,
+/// 96 and 192 kHz), the worst last step was: Green Diode Overdrive 2.0e-9, Three-Band Stack Boost
+/// 3.4e-10, Class A Transistor Drive 4.3e-11, Four Stage Sustainer 2.2e-11, Feedback Pair Drive
+/// 6.9e-13, Three-Transistor Drive 4.0e-14, Seven Band Graphic and Precision Rectifier 0. The
+/// bound is 50 times the worst of them. At their worst position the first four do not reach the
+/// 1e-12 at which the loop stops early.
+///
+/// While `Netlist` entered a transistor's RE of 0 as 1 milliohm, the Class A Transistor Drive's
+/// solve stopped shrinking far earlier: the same scan measured 5.6e-8 at Level rotation
+/// 0.2496256, 1.8 times under the bound.
 const MAX_DC_STEP: f64 = 1e-7;
 
 /// Largest `dc_residual` at which the operating point counts as a solution of the DC equations.
-/// Measured over the same combinations, the worst was: Class A Transistor Drive 1.5e-14 (2.8e-14
-/// over 2001 positions), Three-Transistor Drive 1.2e-15, Feedback Pair Drive 9.5e-16, the other
-/// five at most 2.1e-16. The DC equations do not contain the sample rate, and the values were the
-/// same at every rate. The fault-injection test `wrong_operating_point_is_not_pinned` solves an
+/// Measured over the same positions, the worst was: Class A Transistor Drive 2.8e-14, Four Stage
+/// Sustainer 5.5e-15, Feedback Pair Drive 1.5e-15, Three-Transistor Drive 5.1e-16, Three-Band
+/// Stack Boost 2.6e-16, Green Diode Overdrive 2.5e-16, the other two 0. The Class A Transistor
+/// Drive's worst row is the collector node behind one transistor's RC of 1.61 ohm: two terms of
+/// 2.55 mA that cancel to 1.4e-16 A. The DC equations do not contain the sample rate, and the
+/// values were the same at every rate. The fault-injection test `wrong_operating_point_is_not_pinned` solves an
 /// emitter follower with 1e-13 A too much flowing into its bias node, 0.5 nV off, and measures
-/// 5.6e-11; with 100 nA, 0.5 mV off, it measures 5.6e-5. The bound is 35 times the worst
+/// 5.6e-11; with 100 nA, 0.5 mV off, it measures 5.6e-5. The bound is 36 times the worst
 /// measured residual and 56 times under that of the smaller fault.
 const MAX_DC_RESIDUAL: f64 = 1e-12;
 
@@ -73,8 +79,8 @@ const MAX_DC_RESIDUAL: f64 = 1e-12;
 /// tell a wrong operating point from a right one, because a slow capacitor turns a wrong DC
 /// voltage into a small miss per sample: the test `wrong_operating_point_is_not_pinned` builds a
 /// point 0.5 mV off that passes this bound. `dc_residual` is the check for that. Measured over
-/// the same combinations, the largest distance was 1.3e-8 V (Three-Transistor Drive, at its
-/// 4.6 MHz Circuit rate), 75 times under the bound.
+/// the same positions, the largest distance was 1.2e-8 V (Green Diode Overdrive), 87 times
+/// under the bound; the next is the Feedback Pair Drive's 5.6e-10 V.
 const MAX_PIN_VOLTS: f64 = 1e-6;
 
 /// Node index; 0 is ground.
@@ -919,7 +925,8 @@ impl Circuit {
             // the device currents. The order matters. A 100 uF capacitor at 9 V holds a history
             // near 1000 A, and one unit in its last place, 2e-13 A, is a current that a 50k bias
             // node turns into nanovolts. So the correction is repeated until that sum gives the
-            // rest value itself, or stops getting closer.
+            // rest value itself, or `PIN_MAX_ROUNDS` corrections have been made. The last of
+            // those is not checked: what it leaves, if anything, stays in the row.
             let mut removed = 0.0f64;
             for round in 0..PIN_MAX_ROUNDS {
                 let mut row = 0.0;
