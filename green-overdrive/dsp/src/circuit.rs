@@ -1120,17 +1120,21 @@ impl Circuit {
     }
 
     /// Bound on how far earlier devices' port voltages are from consistent with the currents that
-    /// later devices settled on during the last sweep (in volts).
+    /// later devices settled on during the last sweep (in volts). "Later" is later in solve
+    /// order, the order of `devices`: `order_devices` permutes them, so a later device's ports
+    /// can have lower indices than an earlier one's.
     fn sweep_error(&self) -> f64 {
         let base = self.caps.len() + 2;
         let mut worst = 0.0f64;
         for (d, &(dev, first)) in self.devices.iter().enumerate() {
-            let later = self.devices.get(d + 1).map_or(self.ports.len(), |x| x.1);
             for r in first..first + dev.ports() {
                 let row = &self.port_v.row(r)[base..];
-                let err: f64 = (later..self.ports.len())
-                    .map(|c| (row[c] * (self.z[base + c] - self.i_used[c])).abs())
-                    .sum();
+                let mut err = 0.0;
+                for &(later, later_first) in &self.devices[d + 1..] {
+                    for c in later_first..later_first + later.ports() {
+                        err += (row[c] * (self.z[base + c] - self.i_used[c])).abs();
+                    }
+                }
                 worst = worst.max(err);
             }
         }
@@ -1798,6 +1802,77 @@ mod tests {
             assert!((c.tick(0.0) - rest).abs() < 1e-6);
         }
         assert_eq!(c.failed_solves(), MAX_CONSECUTIVE_HELD as u64 + 10);
+    }
+
+    #[test]
+    fn sweep_error_sums_over_the_devices_solved_later_not_over_higher_port_indices() {
+        // Three diode stages in a chain, each buffered from the one before, listed downstream
+        // first: the solve order (upstream first) is the reverse of the port order. Weak
+        // resistors from the later stages back to the earlier ones make the later currents count.
+        let diode = |a: Node| Element::Diode {
+            a,
+            b: 0,
+            is: 2.52e-9,
+            nvt: 1.752 * 0.025_864_6,
+        };
+        let buffer = |from: Node, to: Node| Element::Vcvs {
+            p: to,
+            n: 0,
+            cp: from,
+            cn: 0,
+            gain: 1.0,
+        };
+        let (x, y, w) = (2, 4, 6);
+        let els = vec![
+            diode(w),
+            diode(y),
+            diode(x),
+            Element::Input(1, 0),
+            Element::Resistor(1, x, 10e3),
+            buffer(x, 3),
+            Element::Resistor(3, y, 10e3),
+            buffer(y, 5),
+            Element::Resistor(5, w, 10e3),
+            Element::Resistor(w, y, 1e6),
+            Element::Resistor(w, x, 2e6),
+            Element::Resistor(y, x, 3e6),
+        ];
+        let mut c = Circuit::new(els, (w, 0), 96_000.0);
+        let order: Vec<usize> = c.devices.iter().map(|d| d.1).collect();
+        assert_eq!(order, [2, 1, 0], "solve order by first port: upstream first");
+        // The currents each device settled on in a sweep, against those the sweep started from.
+        let (base, nn) = (c.caps.len() + 2, c.ports.len());
+        let moved = [3e-6, 5e-6, 7e-6];
+        c.i_used.copy_from_slice(&[1e-3, 2e-3, 3e-3]);
+        for k in 0..nn {
+            c.z[base + k] = c.i_used[k] + moved[k];
+        }
+        // Computed another way: each port's place in the solve order, then for every port the
+        // sum over the ports that are solved after it.
+        let mut place = vec![0; nn];
+        for (at, &(dev, first)) in c.devices.iter().enumerate() {
+            place[first..first + dev.ports()].fill(at);
+        }
+        let k = |r: usize, col: usize| c.port_v.at(r, base + col);
+        let expected = (0..nn)
+            .map(|r| {
+                (0..nn)
+                    .filter(|&col| place[col] > place[r])
+                    .map(|col| (k(r, col) * moved[col]).abs())
+                    .sum::<f64>()
+            })
+            .fold(0.0, f64::max);
+        // The worst row is the first stage's: both later stages feed back to it.
+        let first_stage = (k(2, 1) * moved[1]).abs() + (k(2, 0) * moved[0]).abs();
+        assert!(
+            expected > 1e-9 && expected == first_stage,
+            "{expected} V, {first_stage} V"
+        );
+        let got = c.sweep_error();
+        assert!(
+            (got - expected).abs() <= 1e-12 * expected,
+            "sweep_error {got} V, the devices solved later give {expected} V"
+        );
     }
 
     #[test]
