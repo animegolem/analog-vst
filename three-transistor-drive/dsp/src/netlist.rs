@@ -125,6 +125,8 @@ impl Netlist {
         self.elements.push(Element::Dc(n, 0, volts));
     }
 
+    /// One diode, with ngspice's reverse-bias law and GMIN (see `Device::Diode`). SPICE's `M` and
+    /// `TT` are not modeled: the netlist's `.model` must set both to 0.
     pub fn diode(&mut self, anode: &str, cathode: &str, m: DiodeModel) {
         let (a, b) = (self.node(anode), self.node(cathode));
         let j = self.series_rs(a, m.rs);

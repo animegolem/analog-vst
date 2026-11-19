@@ -11,8 +11,71 @@
 // Matrix code reads more clearly with explicit row and column indices.
 #![allow(clippy::needless_range_loop)]
 
+/// Bound on the joint Newton solve's iterations per sample. A solve that uses them all has
+/// failed: `tick` holds the circuit at its last valid state for that sample.
+const JOINT_MAX_ITERATIONS: usize = 200;
+
+/// The joint Newton solve stops when no port's Newton correction reaches this much (volts).
+const JOINT_TOLERANCE_V: f64 = 1e-9;
+
+/// Bound on the rounds of per-device solves per sample when devices are solved one at a time.
+const SWEEP_MAX_ROUNDS: usize = 32;
+
+/// Rounds of per-device solves stop when `sweep_error` is under this much (volts). The looser
+/// 1e-7 this Solver once had left spurious third and fifth harmonics near -79 dBc in the Class A
+/// Transistor Drive, the one Project that repeats rounds.
+const SWEEP_TOLERANCE_V: f64 = 1e-12;
+
+/// Bound on one device's Newton iterations in a per-device solve.
+const DEVICE_MAX_ITERATIONS: usize = 64;
+
+/// Bound on the corrections the pin makes to one row (see `pin_operating_point`).
+const PIN_MAX_ROUNDS: usize = 4;
+
 /// Conductance standing in for an inductor at DC.
 const INDUCTOR_DC_SHORT: f64 = 1e9;
+
+/// SPICE's default GMIN: the conductance ngspice puts across every pn junction. Applied to
+/// `Device::Diode` only; the diode pair and the transistors do not have it.
+const GMIN: f64 = 1e-12;
+
+/// Largest last Newton step at which the DC operating point counts as converged. The step is the
+/// largest change in any unknown: node voltages in volts and voltage-source currents in amperes,
+/// taken together. This bound, `MAX_DC_RESIDUAL` and `MAX_PIN_VOLTS` are the acceptance criteria;
+/// none is a bound on the operating point's error. As a local heuristic only (exact arithmetic,
+/// one junction, quadratic convergence), a step this size leaves about step^2 / (2 Vt) = 2e-13 V.
+/// The step cannot be asked to reach zero: the DC equations are evaluated in double precision,
+/// and the steps can stop shrinking first.
+///
+/// Measured by the test `dc_bounds_over_controls_and_rates` on each of the eight Models (every
+/// Control at 0, 0.1, 0.5, 0.9 and 1, at most 125 combinations, at the Circuit rates of 44.1, 48,
+/// 96 and 192 kHz), the worst last step was: Class A Transistor Drive 3.5e-8 (3.7e-8 over 2001
+/// positions of its one Control), Four Stage Sustainer 3.2e-9, Green Diode Overdrive 1.7e-9,
+/// Three-Band Stack Boost 4.1e-10, Feedback Pair Drive 7.9e-13, Three-Transistor Drive 3.3e-13,
+/// Seven Band Graphic and Precision Rectifier 0. The bound is 2.7 times the worst of them and at
+/// least 30 times each of the other seven. The first four never reach the 1e-12 at which the
+/// loop stops early.
+const MAX_DC_STEP: f64 = 1e-7;
+
+/// Largest `dc_residual` at which the operating point counts as a solution of the DC equations.
+/// Measured over the same combinations, the worst was: Class A Transistor Drive 1.5e-14 (2.8e-14
+/// over 2001 positions), Three-Transistor Drive 1.2e-15, Feedback Pair Drive 9.5e-16, the other
+/// five at most 2.1e-16. The DC equations do not contain the sample rate, and the values were the
+/// same at every rate. The fault-injection test `wrong_operating_point_is_not_pinned` solves an
+/// emitter follower with 1e-13 A too much flowing into its bias node, 0.5 nV off, and measures
+/// 5.6e-11; with 100 nA, 0.5 mV off, it measures 5.6e-5. The bound is 35 times the worst
+/// measured residual and 56 times under that of the smaller fault.
+const MAX_DC_RESIDUAL: f64 = 1e-12;
+
+/// Largest distance, in volts, between a row of the discrete system at the operating point and
+/// that operating point, before the pin removes it. A gross-mismatch check only: a row this far
+/// from rest means the DC solve and the discrete system describe different circuits. It cannot
+/// tell a wrong operating point from a right one, because a slow capacitor turns a wrong DC
+/// voltage into a small miss per sample: the test `wrong_operating_point_is_not_pinned` builds a
+/// point 0.5 mV off that passes this bound. `dc_residual` is the check for that. Measured over
+/// the same combinations, the largest distance was 1.3e-8 V (Three-Transistor Drive, at its
+/// 4.6 MHz Circuit rate), 75 times under the bound.
+const MAX_PIN_VOLTS: f64 = 1e-6;
 
 /// Node index; 0 is ground.
 pub type Node = usize;
@@ -61,7 +124,8 @@ pub enum Element {
         is: f64,
         nvt: f64,
     },
-    /// Single diode, anode `a`, cathode `b`: `i = Is (exp(v / (N Vt)) - 1)`.
+    /// Single diode, anode `a`, cathode `b`: `i = Is (exp(v / (N Vt)) - 1)`, with ngspice's
+    /// reverse-bias law and GMIN (see `Device::eval`).
     Diode {
         a: Node,
         b: Node,
@@ -126,6 +190,44 @@ impl Device {
         }
     }
 
+    /// Limits a proposed move of the port voltages from `old` to `new` so that no junction is
+    /// thrown far up its exponential (SPICE's junction limiting). Returns whether `new` changed.
+    /// A Newton step, or an extrapolated first guess, that lands a junction volts into forward
+    /// bias asks for a current of gigaamps; the iteration then creeps back by about one thermal
+    /// voltage per step and can run out of steps.
+    #[inline]
+    fn limit(&self, old: &[f64], new: &mut [f64]) -> bool {
+        match *self {
+            Device::Diode { is, nvt } => {
+                let v = limit_junction(new[0], old[0], nvt, critical_voltage(is, nvt));
+                let limited = v != new[0];
+                new[0] = v;
+                limited
+            }
+            // The pair conducts in both directions: limit the junction that is being driven.
+            Device::DiodePair { is, nvt } => {
+                let sign = if new[0] < 0.0 { -1.0 } else { 1.0 };
+                let v = sign * limit_junction(sign * new[0], sign * old[0], nvt, critical_voltage(is, nvt));
+                let limited = v != new[0];
+                new[0] = v;
+                limited
+            }
+            // Junction voltages: vbe = s v[1], vbc = s (v[1] - v[0]).
+            Device::Bjt { model: m, polarity: s } => {
+                let vcrit = critical_voltage(m.is, m.vt);
+                let (vbe_new, vbc_new) = (s * new[1], s * (new[1] - new[0]));
+                let vbe = limit_junction(vbe_new, s * old[1], m.vt, vcrit);
+                let vbc = limit_junction(vbc_new, s * (old[1] - old[0]), m.vt, vcrit);
+                if vbe == vbe_new && vbc == vbc_new {
+                    return false;
+                }
+                new[1] = s * vbe;
+                new[0] = s * (vbe - vbc);
+                true
+            }
+        }
+    }
+
     /// Port currents and their Jacobian (row-major, ports x ports) at port voltages `v`.
     #[inline]
     fn eval(&self, v: &[f64], i: &mut [f64; 2], j: &mut [f64; 4]) {
@@ -136,10 +238,21 @@ impl Device {
                 i[0] = is * (ep - en);
                 j[0] = is / nvt * (ep + en);
             }
+            // ngspice's diode (dioload.c, no breakdown): the exponential law down to -3 N Vt, below
+            // that -Is (1 + (3 N Vt / (e v))^3), and GMIN across the junction in both regions. The
+            // two branches meet in value at -3 N Vt. Measured on the Precision Rectifier (Is =
+            // 2.52 nA into 100k and 200k resistors): the difference from the plain exponential is
+            // microvolts, which is 0.03 dB of what the harness measures as gain at 100 Hz, -40 dBFS.
             Device::Diode { is, nvt } => {
-                let e = (v[0] / nvt).min(200.0).exp();
-                i[0] = is * (e - 1.0);
-                j[0] = is / nvt * e;
+                if v[0] >= -3.0 * nvt {
+                    let e = (v[0] / nvt).min(200.0).exp();
+                    i[0] = is * (e - 1.0) + GMIN * v[0];
+                    j[0] = is / nvt * e + GMIN;
+                } else {
+                    let arg = (3.0 * nvt / (v[0] * std::f64::consts::E)).powi(3);
+                    i[0] = -is * (1.0 + arg) + GMIN * v[0];
+                    j[0] = is * 3.0 * arg / v[0] + GMIN;
+                }
             }
             // Ports: (c, e) carries Ic, (b, e) carries Ib. vbc = vbe - vce. A PNP is an NPN with
             // voltages and currents negated; the Jacobian is unchanged by the double negation.
@@ -170,6 +283,31 @@ impl Device {
                 j[3] = dib_dvbe + dib_dvbc;
             }
         }
+    }
+}
+
+/// Junction voltage above which limiting applies: where the exponential's curvature is greatest
+/// (SPICE's `vcrit`). `nvt` is the emission coefficient times the thermal voltage.
+#[inline]
+fn critical_voltage(is: f64, nvt: f64) -> f64 {
+    nvt * (nvt / (std::f64::consts::SQRT_2 * is)).ln()
+}
+
+/// SPICE's `pnjlim`: a junction moving from `old` to `new` above `vcrit` by more than two thermal
+/// voltages goes only as far as a logarithmic step. Moves below `vcrit` pass unchanged.
+#[inline]
+fn limit_junction(new: f64, old: f64, nvt: f64, vcrit: f64) -> f64 {
+    if new <= vcrit || (new - old).abs() <= 2.0 * nvt {
+        return new;
+    }
+    if old <= 0.0 {
+        return nvt * (new / nvt).ln();
+    }
+    let arg = 1.0 + (new - old) / nvt;
+    if arg > 0.0 {
+        old + nvt * arg.ln()
+    } else {
+        vcrit
     }
 }
 
@@ -240,8 +378,30 @@ pub struct Circuit {
     v_prev: Vec<f64>,
     i_used: Vec<f64>,
     i_prev: Vec<f64>,
+    /// The DC solution found at construction: node voltages, then voltage-source currents.
     operating_point: Vec<f64>,
+    /// Output of the last sample whose solve succeeded; a failed sample repeats it.
+    y: f64,
+    /// Samples whose solve failed and were held at the last valid state. Saturates.
+    failed_solves: u64,
+    /// Failed samples in a row. At `MAX_CONSECUTIVE_HELD` the circuit goes back to `rest`.
+    consecutive_held: u32,
+    /// Times the circuit went back to `rest` because it could not leave a held state. Saturates.
+    rest_restores: u64,
+    /// The state the DC operating point leaves, kept so that `tick` can return to it without
+    /// allocating: capacitor history, port voltages, device currents, and the output. Solved once,
+    /// at construction: after a pot has moved it is the operating point of the netlist as built,
+    /// not of the netlist as it is now.
+    rest: Vec<f64>,
+    /// Iterations the joint solve may use, at most `JOINT_MAX_ITERATIONS`. Only tests lower it.
+    joint_iterations: usize,
 }
+
+/// Failed samples in a row after which the circuit is put back at its DC operating point. Solves
+/// that fail on a few samples and then recover (44 scattered over 49,000 for a 5e6 V sine into
+/// the Feedback Pair Drive) never reach it; a state that no sample solves from would otherwise be
+/// held for ever.
+const MAX_CONSECUTIVE_HELD: u32 = 1024;
 
 impl Circuit {
     pub fn new(elements: Vec<Element>, output: (Node, Node), rate: f64) -> Self {
@@ -334,7 +494,13 @@ impl Circuit {
             v_prev: vec![0.0; nn],
             i_used: vec![0.0; nn],
             i_prev: vec![0.0; nn],
-            operating_point: vec![0.0; nodes],
+            operating_point: vec![0.0; size],
+            y: 0.0,
+            failed_solves: 0,
+            consecutive_held: 0,
+            rest_restores: 0,
+            rest: vec![0.0; nx + 2 * nn + 1],
+            joint_iterations: JOINT_MAX_ITERATIONS,
             caps,
             ports,
             devices,
@@ -342,7 +508,17 @@ impl Circuit {
         };
         circuit.update();
         circuit.order_devices();
-        circuit.solve_operating_point();
+        let last_step = circuit.solve_operating_point();
+        assert!(
+            last_step < MAX_DC_STEP,
+            "the DC operating point did not converge: the last Newton step was {last_step} V"
+        );
+        // `tick` keeps the state finite from here on; construction runs off the audio thread.
+        assert!(
+            circuit.rest.iter().all(|v| v.is_finite()),
+            "operating point is not finite"
+        );
+        circuit.pin_operating_point();
         circuit
     }
 
@@ -358,7 +534,22 @@ impl Circuit {
         }
     }
 
-    /// Node voltages at the DC operating point found at construction (index = node - 1).
+    /// Samples since construction whose solve failed: the Newton iteration ran out of steps or
+    /// the result was not finite. Each was held at the last valid state and output.
+    pub fn failed_solves(&self) -> u64 {
+        self.failed_solves
+    }
+
+    /// Lowers the joint solve's iteration bound, to force the failure path in a test.
+    #[cfg(test)]
+    pub(crate) fn limit_joint_iterations(&mut self, iterations: usize) {
+        assert!(self.joint, "only a jointly solved circuit has this bound");
+        assert!((1..=JOINT_MAX_ITERATIONS).contains(&iterations));
+        self.joint_iterations = iterations;
+    }
+
+    /// The DC operating point found at construction: node voltages (index = node - 1), then the
+    /// current of each voltage source.
     #[cfg(test)]
     pub fn operating_point(&self) -> &[f64] {
         &self.operating_point
@@ -521,9 +712,19 @@ impl Circuit {
         self.devices = order.iter().map(|&i| self.devices[i]).collect();
     }
 
+    /// Times since construction that the circuit was put back at its DC operating point because
+    /// `MAX_CONSECUTIVE_HELD` samples in a row could not be solved from the state it was in.
+    pub fn rest_restores(&self) -> u64 {
+        self.rest_restores
+    }
+
     /// SPICE-style DC operating point: Newton on the full nodal equations with capacitors open,
     /// stepping the DC sources up from zero. Sets the capacitor states and port voltages.
-    fn solve_operating_point(&mut self) {
+    ///
+    /// Returns the size of the last Newton step with the sources at full value (volts at nodes,
+    /// amperes in voltage sources), or infinity if that step was damped. The caller decides whether
+    /// that is converged; the point is wherever the last step left it.
+    fn solve_operating_point(&mut self) -> f64 {
         let n = self.size;
         self.stamp_all(true);
         let s_dc = self.s.clone();
@@ -533,6 +734,7 @@ impl Circuit {
         let mut perm = vec![0; n];
         let mut residual = vec![0.0; n];
         let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
+        let mut last_step = f64::INFINITY;
         let port_voltage = |z: &[f64], (a, b): (Node, Node)| node_val(z, a) - node_val(z, b);
         for step in 1..=20 {
             let lambda = step as f64 / 20.0;
@@ -577,12 +779,18 @@ impl Circuit {
                 for (zi, d) in z.iter_mut().zip(&delta) {
                     *zi -= damp * d;
                 }
-                if damp == 1.0 && delta.iter().all(|d| d.abs() < 1e-12) {
+                // A NaN anywhere makes the step NaN, which is under no bound.
+                let step_size = delta
+                    .iter()
+                    .fold(0.0, |m: f64, d| if d.abs() > m || d.is_nan() { d.abs() } else { m });
+                last_step = if damp == 1.0 { step_size } else { f64::INFINITY };
+                if last_step < 1e-12 {
                     break;
                 }
             }
         }
-        self.operating_point.copy_from_slice(&z[..self.nodes]);
+        self.operating_point.copy_from_slice(&z);
+        self.y = node_val(&z, self.output.0) - node_val(&z, self.output.1);
         for (k, &(a, b, g)) in self.caps.iter().enumerate() {
             let v = node_val(&z, a) - node_val(&z, b);
             // Steady state: no capacitor current (x = g v); inductor current i = g v - x carries the
@@ -604,13 +812,155 @@ impl Circuit {
             self.z[base + first..base + first + np].copy_from_slice(&i[..np]);
             self.i_prev[first..first + np].copy_from_slice(&i[..np]);
         }
+        let (nx, nn) = (self.caps.len(), self.ports.len());
+        assert_eq!(self.rest.len(), nx + 2 * nn + 1);
+        self.rest[..nx].copy_from_slice(&self.x);
+        self.rest[nx..nx + nn].copy_from_slice(&self.v);
+        self.rest[nx + nn..nx + 2 * nn].copy_from_slice(&self.z[base..]);
+        self.rest[nx + 2 * nn] = self.y;
+        last_step
     }
 
-    /// Processes one sample at the circuit's rate.
+    /// How far the stored operating point is from solving the DC equations of the netlist as it is
+    /// now: the worst row's residual over the sum of the magnitudes of that row's terms. A node's
+    /// row is Kirchhoff's current law (amperes over amperes), a source's row its voltage (volts
+    /// over volts). Rounding alone leaves about 1e-16.
+    ///
+    /// It shares the element stamps and device equations with `solve_operating_point` and nothing
+    /// else: the matrix is stamped again from the elements, and the equations are evaluated at the
+    /// point Newton stopped on, which Newton itself never does. A wrong stamp or device equation
+    /// is therefore not caught here; the comparison with the SPICE reference catches that.
+    fn dc_residual(&mut self) -> f64 {
+        self.stamp_all(true);
+        let n = self.size;
+        let z = &self.operating_point;
+        let (mut residual, mut terms) = (vec![0.0; n], vec![0.0; n]);
+        for r in 0..n {
+            let rhs = self.dc_rhs(r);
+            residual[r] = -rhs;
+            terms[r] = rhs.abs();
+            for c in 0..n {
+                let t = self.s.at(r, c) * z[c];
+                residual[r] += t;
+                terms[r] += t.abs();
+            }
+        }
+        let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
+        for &(dev, first) in &self.devices {
+            let np = dev.ports();
+            let mut v = [0.0; 2];
+            for k in 0..np {
+                let (a, b) = self.ports[first + k];
+                v[k] = node_val(z, a) - node_val(z, b);
+            }
+            dev.eval(&v[..np], &mut i, &mut j);
+            for k in 0..np {
+                let (a, b) = self.ports[first + k];
+                add_node(&mut residual, a, i[k]);
+                add_node(&mut residual, b, -i[k]);
+                add_node(&mut terms, a, i[k].abs());
+                add_node(&mut terms, b, i[k].abs());
+            }
+        }
+        // A row with no terms has no residual. A NaN anywhere makes the result NaN, which is under
+        // no bound.
+        let mut worst = 0.0f64;
+        for (r, t) in residual.iter().zip(&terms) {
+            if *t != 0.0 {
+                let miss = r.abs() / t;
+                if miss > worst || miss.is_nan() {
+                    worst = miss;
+                }
+            }
+        }
+        worst
+    }
+
+    /// Makes the operating point an exact rest state of the discrete system. Returns the largest
+    /// distance it removed from any row, in volts.
+    ///
+    /// The rows of `lin` are differences of entries of a double-precision inverse, so they agree
+    /// with one another to about one part in 1e12, not exactly. At rest the history states are
+    /// large (2 C rate V: 35 A for 10 uF holding 3 V at 576 kHz), so each row carries a constant
+    /// error of picoamps that no element conducts. A coupling capacitor turns that into a steady
+    /// current: 2e-11 A into a 10k load is 0.2 uV at the output, which settles in over 0.1 s and
+    /// swamps a signal that a control has muted ahead of that stage. Folding each row's error at
+    /// the operating point into the DC column removes it. What is left scales with the signal.
+    ///
+    /// The pin holds whatever point it is given, so the point is first checked against the DC
+    /// equations. A point that fails is a bug in the DC solve or in its caller, and panics. That
+    /// can only happen here, at construction: a pot change rebuilds `lin` in `update` without the
+    /// pin and without a DC solve (the operating point may have moved, and pinning again needs a
+    /// fresh solve), so `tick` reaches none of these checks. From the first pot change on, the
+    /// rows carry their rounding error again.
+    fn pin_operating_point(&mut self) -> f64 {
+        let residual = self.dc_residual();
+        assert!(
+            residual < MAX_DC_RESIDUAL,
+            "the operating point misses the DC equations by {residual} of a row's terms"
+        );
+        let (nx, nn) = (self.caps.len(), self.ports.len());
+        let (base, rows) = (nx + 2, nx + 1 + nn);
+        let dc = (nx + 1) * rows;
+        let out_at_rest =
+            node_val(&self.operating_point, self.output.0) - node_val(&self.operating_point, self.output.1);
+        let mut worst = 0.0f64;
+        for r in 0..rows {
+            // At rest a capacitor's state repeats (x' = row - x = x), an inductor has no voltage
+            // (x' = row + x = x), and the output and ports sit at their operating-point voltages.
+            let (at_rest, volts) = if r < nx {
+                ((1.0 - self.beta[r]) * self.x[r], 1.0 / self.gc2[r].abs())
+            } else if r == nx {
+                (out_at_rest, 1.0)
+            } else {
+                (self.v[r - nx - 1], 1.0)
+            };
+            // The row as `tick` sums it at rest: history columns in order, the DC column, then
+            // the device currents. The order matters. A 100 uF capacitor at 9 V holds a history
+            // near 1000 A, and one unit in its last place, 2e-13 A, is a current that a 50k bias
+            // node turns into nanovolts. So the correction is repeated until that sum gives the
+            // rest value itself, or stops getting closer.
+            let mut removed = 0.0f64;
+            for round in 0..PIN_MAX_ROUNDS {
+                let mut row = 0.0;
+                for c in 0..nx {
+                    row += self.lin[c * rows + r] * self.x[c];
+                }
+                row += self.lin[dc + r];
+                for k in 0..nn {
+                    row += self.lin[(base + k) * rows + r] * self.z[base + k];
+                }
+                let error = at_rest - row;
+                if round == 0 {
+                    assert!(
+                        error.abs() * volts < MAX_PIN_VOLTS,
+                        "row {r} is {} V from the operating point",
+                        error * volts
+                    );
+                    removed = error.abs() * volts;
+                }
+                if error == 0.0 {
+                    break;
+                }
+                self.lin[dc + r] += error;
+            }
+            worst = worst.max(removed);
+        }
+        worst
+    }
+
+    /// Processes one sample at the circuit's rate. Never panics on a bad sample:
+    /// - a non-finite input sample is treated as 0 V;
+    /// - a sample whose solve fails (the joint Newton iteration, a device's own Newton iteration
+    ///   or the rounds of per-device solves run out of steps, or the complete new capacitor
+    ///   history, the output, or a port voltage or device current is not finite)
+    ///   leaves the capacitor history, port voltages and device currents as the last successful
+    ///   sample left them, returns that sample's output again and counts into `failed_solves`.
     pub fn tick(&mut self, u: f64) -> f64 {
         if self.dirty {
             self.update();
         }
+        let u = if u.is_finite() { u } else { 0.0 };
         let (nx, nn) = (self.caps.len(), self.ports.len());
         let (base, rows) = (nx + 2, nx + 1 + nn);
         self.z[nx] = u;
@@ -637,15 +987,25 @@ impl Circuit {
             };
             self.i_prev[k] = i;
         }
+        let mut solved = false;
         if self.joint {
-            self.solve_joint();
+            // The extrapolated guess can overshoot a junction that is just turning on (a base
+            // driven through a capacitor moves 0.7 V a sample here): limit it against the last
+            // solution, in `v_prev`.
+            for &(dev, first) in &self.devices {
+                let span = first..first + dev.ports();
+                dev.limit(&self.v_prev[span.clone()], &mut self.v[span]);
+            }
+            solved = self.solve_joint();
         } else {
-            for _ in 0..32 {
+            for _ in 0..SWEEP_MAX_ROUNDS {
                 self.i_used.copy_from_slice(&self.z[base..]);
+                let mut devices_solved = true;
                 for d in 0..self.devices.len() {
-                    self.solve_device(d);
+                    devices_solved &= self.solve_device(d);
                 }
-                if self.sequential || self.sweep_error() < 1e-12 {
+                if self.sequential || self.sweep_error() < SWEEP_TOLERANCE_V {
+                    solved = devices_solved;
                     break;
                 }
             }
@@ -656,18 +1016,54 @@ impl Circuit {
                 *a += m * zc;
             }
         }
-        for ((x, &a), &b) in self.x.iter_mut().zip(&self.acc).zip(&self.beta) {
-            *x = a + b * *x;
+        // The complete candidate history x' = gc2 * v + beta * x, built in `acc` and held back
+        // until the sample is accepted. Finite operands can overflow in this last step, so the
+        // finiteness check below must come after it.
+        for ((a, &x), &b) in self.acc.iter_mut().zip(&self.x).zip(&self.beta) {
+            *a += b * x;
         }
-        self.acc[nx]
+        // Second check, on everything about to be kept: the new history, the output, and the
+        // port voltages and device currents the next sample starts from.
+        let finite = |s: &[f64]| s.iter().all(|v| v.is_finite());
+        if !(solved && finite(&self.acc[..=nx]) && finite(&self.v) && finite(&self.z[base..])) {
+            // Contain the failure. The history `x` is untouched. `v_prev` and `i_prev` hold the
+            // last successful sample's port voltages and currents; go back to them. The next
+            // sample's first guess then has no slope, which only costs it iterations.
+            self.v.copy_from_slice(&self.v_prev);
+            self.z[base..].copy_from_slice(&self.i_prev);
+            self.failed_solves = self.failed_solves.saturating_add(1);
+            self.consecutive_held += 1;
+            if self.consecutive_held >= MAX_CONSECUTIVE_HELD {
+                // An accepted history can be one that no later sample solves from (seen after a
+                // 1e8 V input: every sample held from then on, at any iteration bound). Holding
+                // cannot leave it, so go back to the DC operating point, as at construction.
+                self.x.copy_from_slice(&self.rest[..nx]);
+                self.v.copy_from_slice(&self.rest[nx..nx + nn]);
+                self.v_prev.copy_from_slice(&self.rest[nx..nx + nn]);
+                self.z[base..].copy_from_slice(&self.rest[nx + nn..nx + 2 * nn]);
+                self.i_prev.copy_from_slice(&self.rest[nx + nn..nx + 2 * nn]);
+                self.y = self.rest[nx + 2 * nn];
+                self.consecutive_held = 0;
+                self.rest_restores = self.rest_restores.saturating_add(1);
+            }
+            debug_assert!(self.y.is_finite() && finite(&self.x) && finite(&self.v));
+            return self.y;
+        }
+        self.consecutive_held = 0;
+        self.x.copy_from_slice(&self.acc[..nx]);
+        self.y = self.acc[nx];
+        self.y
     }
 
     /// Newton over all ports at once: v = p + K f(v), with p the linear part of each port voltage.
-    fn solve_joint(&mut self) {
+    /// Returns whether it converged within its iteration bound. When it did not, the port voltages
+    /// and currents it leaves are not a solution and the caller must discard them.
+    fn solve_joint(&mut self) -> bool {
         let nx = self.caps.len();
         let (base, nn) = (nx + 2, self.ports.len());
         let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
-        for _ in 0..64 {
+        let mut converged = false;
+        for _ in 0..self.joint_iterations {
             self.jac.data.fill(0.0);
             for &(dev, first) in &self.devices {
                 let np = dev.ports();
@@ -689,20 +1085,38 @@ impl Circuit {
                 *self.jac.at_mut(r, nn) = self.v[r] - self.acc[nx + 1 + r] - ki;
             }
             solve_small(&mut self.jac, nn);
-            let big = (0..nn).fold(0.0f64, |m, k| m.max(self.jac.at(k, nn).abs()));
-            let scale = if big > 0.1 { 0.1 / big } else { 1.0 };
-            for k in 0..nn {
-                self.v[k] -= self.jac.at(k, nn) * scale;
+            // Take the Newton step, limited per junction. Ports that stay off the exponentials
+            // (a collector swinging 20 V in a sample) move the whole way: the system is linear in
+            // them. One scale for all ports would hold a junction that must fall by a volt to
+            // the pace of the largest port.
+            // Convergence is judged on the raw Newton corrections, not on `new - old` after the
+            // update, which loses digits to cancellation. A NaN correction fails the comparison.
+            let small = (0..nn).all(|k| self.jac.at(k, nn).abs() < JOINT_TOLERANCE_V);
+            let mut limited = false;
+            for &(dev, first) in &self.devices {
+                let np = dev.ports();
+                let (mut old, mut new) = ([0.0; 2], [0.0; 2]);
+                for k in 0..np {
+                    old[k] = self.v[first + k];
+                    new[k] = old[k] - self.jac.at(first + k, nn);
+                }
+                limited |= dev.limit(&old[..np], &mut new[..np]);
+                self.v[first..first + np].copy_from_slice(&new[..np]);
             }
-            if big * scale < 1e-9 {
+            if !limited && small {
+                converged = true;
                 break;
             }
+        }
+        if !converged {
+            return false;
         }
         for &(dev, first) in &self.devices {
             let np = dev.ports();
             dev.eval(&self.v[first..first + np], &mut i, &mut j);
             self.z[base + first..base + first + np].copy_from_slice(&i[..np]);
         }
+        true
     }
 
     /// Bound on how far earlier devices' port voltages are from consistent with the currents that
@@ -724,8 +1138,8 @@ impl Circuit {
     }
 
     /// Newton solve of one device's ports: v = p + K_dd f(v), where p holds the linear part and the
-    /// other devices' latest currents. Returns the largest change in this device's port voltages.
-    fn solve_device(&mut self, d: usize) -> f64 {
+    /// other devices' latest currents. Returns whether it converged within its iteration bound.
+    fn solve_device(&mut self, d: usize) -> bool {
         let nx = self.caps.len();
         let base = nx + 2;
         let (dev, first) = self.devices[d];
@@ -741,7 +1155,8 @@ impl Circuit {
             v[r] = self.v[first + r];
         }
         let (mut i, mut j, mut cur) = ([0.0; 2], [0.0; 4], [0.0; 2]);
-        for _ in 0..64 {
+        let mut done = false;
+        for _ in 0..DEVICE_MAX_ITERATIONS {
             dev.eval(&v[..np], &mut i, &mut j);
             let mut step = [0.0; 2];
             if np == 1 {
@@ -763,7 +1178,7 @@ impl Circuit {
                 step[r] *= scale;
                 v[r] -= step[r];
             }
-            let done = dev.converged(&v[..np], &step[..np]);
+            done = dev.converged(&v[..np], &step[..np]);
             // Currents at the updated v from the linearization; exact to second order in the step.
             for r in 0..np {
                 cur[r] = i[r] - (0..np).map(|c| j[r * np + c] * step[c]).sum::<f64>();
@@ -772,13 +1187,11 @@ impl Circuit {
                 break;
             }
         }
-        let mut change = 0.0f64;
         for r in 0..np {
-            change = change.max((v[r] - self.v[first + r]).abs());
             self.z[base + first + r] = cur[r];
             self.v[first + r] = v[r];
         }
-        change
+        done
     }
 }
 
@@ -900,6 +1313,8 @@ fn solve_small(m: &mut Mat, n: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model;
+    use crate::netlist::Netlist;
     use std::f64::consts::PI;
 
     const Q2N3904: Bjt = Bjt {
@@ -945,6 +1360,34 @@ mod tests {
             let expected = 1.0 / (1.0 + (warped * r * cap).powi(2)).sqrt();
             assert!((gain(&mut c, f, 1.0) - expected).abs() < 1e-4, "{f} Hz");
         }
+    }
+
+    #[test]
+    fn history_that_overflows_from_finite_operands_is_rejected() {
+        // An RC lowpass at a 1 Hz circuit rate, driven with +1e308 V and -1e308 V in turn. Both
+        // terms of the history update x' = gc2 * v + beta * x stay finite while their sum
+        // overflows. Such a sample must be rejected whole: the history never holds a non-finite
+        // value, and silence afterwards solves normally and decays to rest.
+        let elements = vec![
+            Element::Input(1, 0),
+            Element::Resistor(1, 2, 0.1),
+            Element::Capacitor(2, 0, 0.05),
+        ];
+        let mut c = Circuit::new(elements, (2, 0), 1.0);
+        for k in 0..100 {
+            let y = c.tick(if k % 2 == 0 { 1e308 } else { -1e308 });
+            assert!(y.is_finite(), "output {y} at sample {k}");
+            assert!(c.x.iter().all(|x| x.is_finite()), "history {:?} at sample {k}", c.x);
+        }
+        let failed = c.failed_solves();
+        assert!(failed > 0, "no sample overflowed, so this did not test the rejection");
+        let mut y = f64::INFINITY;
+        for k in 0..40_000 {
+            y = c.tick(0.0);
+            assert!(y.is_finite() && c.x[0].is_finite(), "sample {k} of silence");
+        }
+        assert_eq!(c.failed_solves(), failed, "silence solves normally afterwards");
+        assert!(y.abs() < 1e-6, "output {y} V after 40000 silent samples");
     }
 
     #[test]
@@ -1067,6 +1510,161 @@ mod tests {
     }
 
     #[test]
+    fn pnp_is_the_mirror_image_of_npn() {
+        // A PNP at negated port voltages carries the NPN's currents negated, with the same
+        // Jacobian. Covers forward-active, saturation, cut-off and reverse operation.
+        let (npn, pnp) = (
+            Device::Bjt {
+                model: Q2N3904,
+                polarity: 1.0,
+            },
+            Device::Bjt {
+                model: Q2N3904,
+                polarity: -1.0,
+            },
+        );
+        for v in [
+            [5.0, 0.65],
+            [0.05, 0.7],
+            [0.1, 0.7],
+            [11.0, -4.0],
+            [-0.6, 0.1],
+            [-2.0, 0.3],
+            [0.0, 0.0],
+        ] {
+            let (mut i_n, mut j_n, mut i_p, mut j_p) = ([0.0; 2], [0.0; 4], [0.0; 2], [0.0; 4]);
+            npn.eval(&v, &mut i_n, &mut j_n);
+            pnp.eval(&[-v[0], -v[1]], &mut i_p, &mut j_p);
+            assert_eq!([i_p[0], i_p[1]], [-i_n[0], -i_n[1]], "currents at {v:?}");
+            assert_eq!(j_p, j_n, "jacobian at {v:?}");
+        }
+        // A forward-active PNP: current flows out of the collector and out of the base.
+        let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
+        pnp.eval(&[-5.0, -0.65], &mut i, &mut j);
+        assert!(i[0] < 0.0 && i[1] < 0.0 && i[0] / i[1] > 100.0);
+    }
+
+    #[test]
+    fn pnp_jacobian_matches_finite_differences() {
+        let dev = Device::Bjt {
+            model: Q2N3904,
+            polarity: -1.0,
+        };
+        // Forward-active, then saturated (both junctions forward).
+        for v in [[-5.0, -0.65], [-0.1, -0.68], [-0.1, -0.7]] {
+            let (mut i0, mut j) = ([0.0; 2], [0.0; 4]);
+            dev.eval(&v, &mut i0, &mut j);
+            assert!(
+                i0[0] < 0.0 && i0[1] < 0.0,
+                "a conducting PNP's port currents are negative"
+            );
+            for c in 0..2 {
+                let h = 1e-7;
+                let (mut vp, mut vm) = (v, v);
+                vp[c] += h;
+                vm[c] -= h;
+                let (mut ip, mut im, mut jx) = ([0.0; 2], [0.0; 2], [0.0; 4]);
+                dev.eval(&vp, &mut ip, &mut jx);
+                dev.eval(&vm, &mut im, &mut jx);
+                for r in 0..2 {
+                    let fd = (ip[r] - im[r]) / (2.0 * h);
+                    assert!(
+                        (fd - j[r * 2 + c]).abs() <= 1e-5 * fd.abs().max(1e-9),
+                        "d i{r} / d v{c} at {v:?}: {fd} vs {}",
+                        j[r * 2 + c]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pnp_common_emitter_operating_point_holds_at_rest() {
+        // 9 V supply, PNP with its emitter on the supply, base biased through 4.7M to ground, 4.7k
+        // collector load to ground. The operating point satisfies the transistor equations with
+        // the PNP's polarity, and silence keeps the circuit there.
+        let els = vec![
+            Element::Dc(1, 0, 9.0),
+            Element::Resistor(2, 0, 4.7e6),
+            Element::Input(4, 0),
+            Element::Capacitor(4, 2, 1e-6),
+            Element::Pnp {
+                c: 3,
+                b: 2,
+                e: 1,
+                model: Q2N3904,
+            },
+            Element::Resistor(3, 0, 4.7e3),
+        ];
+        let mut c = Circuit::new(els, (3, 0), 96_000.0);
+        let op = c.operating_point().to_vec();
+        let (vb, vc) = (op[1], op[2]);
+        assert!(vb > 8.0 && vb < 8.6, "emitter-base junction is forward biased: vb={vb}");
+        assert!(
+            vc > 0.5 && vc < 8.0,
+            "forward-active, collector between the rails: vc={vc}"
+        );
+        let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
+        Device::Bjt {
+            model: Q2N3904,
+            polarity: -1.0,
+        }
+        .eval(&[vc - 9.0, vb - 9.0], &mut i, &mut j);
+        // Port currents flow from collector (and base) into the emitter node; both are negative.
+        assert!((vc / 4.7e3 + i[0]).abs() < 1e-12, "collector KCL");
+        assert!((vb / 4.7e6 + i[1]).abs() < 1e-12, "base KCL");
+        for _ in 0..1000 {
+            assert!((c.tick(0.0) - vc).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn junction_limiting_only_acts_far_up_the_exponential() {
+        let (is, vt) = (1e-14, 0.025_864_6);
+        let vcrit = critical_voltage(is, vt);
+        assert!((vcrit - 0.7303).abs() < 1e-4, "vcrit {vcrit}");
+        // Below vcrit, and small moves anywhere, pass unchanged.
+        for (new, old) in [(0.7, -5.0), (-8.0, 0.7), (0.9, 0.86), (0.3, 0.2)] {
+            assert_eq!(limit_junction(new, old, vt, vcrit), new);
+        }
+        // A jump into deep forward bias is cut to a logarithmic step above the old voltage.
+        let v = limit_junction(1.6, 0.7, vt, vcrit);
+        assert!(v > 0.7 && v < 0.8, "limited to {v}");
+        // From reverse bias the limited voltage does not depend on how far back it started.
+        assert_eq!(
+            limit_junction(1.6, -3.0, vt, vcrit),
+            limit_junction(1.6, -9.0, vt, vcrit)
+        );
+        assert!(limit_junction(1.6, -3.0, vt, vcrit) < 0.2);
+
+        // A transistor: limiting vbe leaves vbc's move alone, and the mirror holds for a PNP.
+        let npn = Device::Bjt {
+            model: Q2N3904,
+            polarity: 1.0,
+        };
+        let pnp = Device::Bjt {
+            model: Q2N3904,
+            polarity: -1.0,
+        };
+        let (old, mut new) = ([20.0, 0.7], [15.0, 1.6]);
+        assert!(npn.limit(&old, &mut new));
+        assert!(new[1] > 0.7 && new[1] < 0.8, "vbe limited to {}", new[1]);
+        assert!(
+            (new[1] - new[0] - (1.6 - 15.0)).abs() < 1e-12,
+            "vbc keeps its proposed value"
+        );
+        let mut mirrored = [-15.0, -1.6];
+        assert!(pnp.limit(&[-20.0, -0.7], &mut mirrored));
+        assert_eq!(mirrored, [-new[0], -new[1]]);
+        let mut free = [3.0, 0.65];
+        assert!(
+            !npn.limit(&[20.0, -4.0], &mut free),
+            "a move that stays below vcrit is not limited"
+        );
+        assert_eq!(free, [3.0, 0.65]);
+    }
+
+    #[test]
     fn npn_jacobian_matches_finite_differences() {
         let dev = Device::Bjt {
             model: Q2N3904,
@@ -1088,6 +1686,425 @@ mod tests {
                     "d i{r} / d v{c}"
                 );
             }
+        }
+    }
+
+    /// Two transistors in a feedback loop (the second's emitter drives the first's base), which
+    /// the Solver solves jointly.
+    fn feedback_pair() -> Circuit {
+        let els = vec![
+            Element::Dc(1, 0, 9.0),
+            Element::Input(2, 0),
+            Element::Capacitor(2, 3, 2.2e-6),
+            Element::Npn {
+                c: 4,
+                b: 3,
+                e: 0,
+                model: Q2N3904,
+            },
+            Element::Resistor(1, 4, 33e3),
+            Element::Npn {
+                c: 5,
+                b: 4,
+                e: 6,
+                model: Q2N3904,
+            },
+            Element::Resistor(1, 5, 8.2e3),
+            Element::Resistor(6, 0, 1e3),
+            Element::Resistor(6, 3, 100e3),
+            Element::Capacitor(5, 7, 10e-9),
+            Element::Resistor(7, 0, 500e3),
+        ];
+        let c = Circuit::new(els, (7, 0), 576_000.0);
+        assert!(c.joint, "this circuit is meant to take the joint solve");
+        c
+    }
+
+    #[test]
+    fn a_joint_solve_that_runs_out_of_iterations_is_held_and_counted() {
+        let sine = |k: usize| 0.5 * (2.0 * PI * 1000.0 * k as f64 / 576_000.0).sin();
+        let mut c = feedback_pair();
+        let mut last = 0.0;
+        for k in 0..5760 {
+            last = c.tick(sine(k));
+        }
+        assert_eq!(c.failed_solves(), 0, "the driven circuit solves under the normal bound");
+        // One iteration is not enough while the input moves: each such sample repeats the last
+        // output and leaves the history alone.
+        c.limit_joint_iterations(1);
+        let history = c.x.clone();
+        for k in 5760..5860 {
+            assert_eq!(c.tick(sine(k)), last, "sample {k}");
+        }
+        assert_eq!(c.failed_solves(), 100);
+        assert_eq!(c.x, history);
+        assert_eq!(c.rest_restores(), 0);
+        c.limit_joint_iterations(JOINT_MAX_ITERATIONS);
+        for k in 5860..11_520 {
+            assert!(c.tick(sine(k)).is_finite());
+        }
+        assert_eq!(c.failed_solves(), 100, "solves converge again under the normal bound");
+    }
+
+    #[test]
+    fn a_device_solve_that_runs_out_of_iterations_is_held_and_counted() {
+        // A common-emitter stage on a 100 V supply, its collector resting near 50 V, solved per
+        // device. A 1 V step at the input saturates the transistor: the collector has to fall by
+        // tens of volts within one sample, and the device's Newton iteration moves at most 0.1 V
+        // a step, 6.4 V in all. Before the status existed that sample was committed as it stood.
+        let mut c = Circuit::new(
+            vec![
+                Element::Dc(1, 0, 100.0),
+                Element::Resistor(1, 3, 20e6),
+                Element::Resistor(1, 2, 33e3),
+                Element::Input(4, 0),
+                Element::Resistor(4, 5, 1e3),
+                Element::Capacitor(5, 3, 1e-6),
+                Element::Npn {
+                    c: 2,
+                    b: 3,
+                    e: 0,
+                    model: Q2N3904,
+                },
+            ],
+            (2, 0),
+            96_000.0,
+        );
+        assert!(!c.joint);
+        let rest = c.tick(0.0);
+        assert!(rest > 30.0 && rest < 70.0, "collector rests at {rest} V");
+        assert_eq!(c.failed_solves(), 0);
+        let history = c.x.clone();
+        // The stage cannot be solved while the step lasts: every sample is held.
+        for _ in 0..MAX_CONSECUTIVE_HELD - 1 {
+            assert_eq!(c.tick(1.0), rest, "a failed sample repeats the last output");
+        }
+        assert_eq!(c.x, history, "and the history is left alone");
+        assert_eq!(c.rest_restores(), 0);
+        // After `MAX_CONSECUTIVE_HELD` of them the circuit is put back at its operating point,
+        // where the step still cannot be solved, and is held there.
+        for _ in 0..11 {
+            assert!((c.tick(1.0) - rest).abs() < 1e-9);
+        }
+        assert_eq!(c.failed_solves(), MAX_CONSECUTIVE_HELD as u64 + 10);
+        assert_eq!(c.rest_restores(), 1);
+        // Silence solves again, from the state that was held.
+        for _ in 0..1000 {
+            assert!((c.tick(0.0) - rest).abs() < 1e-6);
+        }
+        assert_eq!(c.failed_solves(), MAX_CONSECUTIVE_HELD as u64 + 10);
+    }
+
+    #[test]
+    fn diode_matches_spice_law_and_its_jacobian() {
+        let (is, nvt) = (2.52e-9, 1.752 * 0.025_864_6);
+        let dev = Device::Diode { is, nvt };
+        let eval = |v: f64| {
+            let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
+            dev.eval(&[v], &mut i, &mut j);
+            (i[0], j[0])
+        };
+        // Forward and shallow reverse: Shockley plus GMIN.
+        for v in [0.6, 0.1, 0.0, -0.1] {
+            let want = is * ((v / nvt).exp() - 1.0) + 1e-12 * v;
+            assert!((eval(v).0 - want).abs() <= 1e-12 * want.abs(), "{v} V");
+        }
+        // Deep reverse: the cubic tail, not yet -Is. At -0.3 V the exponential law is within
+        // 0.2% of -Is and SPICE's is 0.46% short of it.
+        let tail = (3.0 * nvt / (0.3 * std::f64::consts::E)).powi(3);
+        assert!((0.004..0.005).contains(&tail));
+        let want = -is * (1.0 - tail) - 1e-12 * 0.3;
+        assert!((eval(-0.3).0 - want).abs() <= 1e-12 * want.abs());
+        // The branches meet in value at -3 N Vt.
+        let edge = -3.0 * nvt;
+        assert!((eval(edge + 1e-9).0 - eval(edge - 1e-9).0).abs() < 1e-6 * is);
+        // Jacobian against central differences, in both branches.
+        for v in [0.6, 0.0, -0.1, -0.2, -0.5, -3.0] {
+            let h = 1e-6;
+            let fd = (eval(v + h).0 - eval(v - h).0) / (2.0 * h);
+            assert!(
+                (fd - eval(v).1).abs() <= 1e-5 * fd.abs().max(1e-12),
+                "{v} V: {fd} vs {}",
+                eval(v).1
+            );
+        }
+    }
+
+    /// An emitter follower biased from a divider, solved with `fault` amperes too much flowing
+    /// into the bias node and then given back its own netlist: the device state is consistent
+    /// with itself and belongs to another circuit. Returns it with the bias node's index.
+    fn follower_solved_with_fault(fault: f64) -> (Circuit, usize) {
+        let (supply, bias) = (1, 2);
+        let mut els = vec![
+            Element::Dc(supply, 0, 9.0),
+            Element::Resistor(supply, bias, 10e3),
+            Element::Resistor(bias, 0, 10e3),
+            Element::Input(4, 0),
+            Element::Capacitor(4, bias, 1e-6),
+            Element::Npn {
+                c: supply,
+                b: bias,
+                e: 3,
+                model: Q2N3904,
+            },
+            Element::Resistor(3, 0, 10e3),
+        ];
+        if fault == 0.0 {
+            return (Circuit::new(els, (3, 0), 576_000.0), bias);
+        }
+        els.push(Element::Vccs {
+            p: 0,
+            n: bias,
+            cp: supply,
+            cn: 0,
+            gm: fault / 9.0,
+        });
+        let mut faulty = Circuit::new(els, (3, 0), 576_000.0);
+        faulty.elements.pop();
+        faulty.update();
+        (faulty, bias)
+    }
+
+    /// A DC operating point that belongs to another circuit is refused, not held at rest.
+    #[test]
+    #[should_panic(expected = "misses the DC equations")]
+    fn wrong_operating_point_is_not_pinned() {
+        let (mut correct, bias) = follower_solved_with_fault(0.0);
+        assert!(correct.dc_residual() < MAX_DC_RESIDUAL, "the right point is accepted");
+        // 1e-13 A moves the bias by half a nanovolt and is already over the bound.
+        let (mut small, _) = follower_solved_with_fault(1e-13);
+        let bias_error = small.operating_point[bias - 1] - correct.operating_point[bias - 1];
+        assert!(
+            (bias_error - 0.5e-9).abs() < 0.02e-9,
+            "1e-13 A moved the bias by {bias_error} V"
+        );
+        let residual = small.dc_residual();
+        assert!(
+            residual > 5.5e-11 && residual < 5.7e-11,
+            "1e-13 A leaves a residual of {residual}"
+        );
+        // 100 nA moves it by half a millivolt. The pin itself would let that through: no row is
+        // `MAX_PIN_VOLTS` from rest.
+        let (mut faulty, _) = follower_solved_with_fault(100e-9);
+        let bias_error = faulty.operating_point[bias - 1] - correct.operating_point[bias - 1];
+        assert!(
+            (bias_error - 0.5e-3).abs() < 0.02e-3,
+            "100 nA moved the bias by {bias_error} V"
+        );
+        let residual = faulty.dc_residual();
+        assert!(
+            residual > 5.5e-5 && residual < 5.7e-5,
+            "100 nA leaves a residual of {residual}"
+        );
+        faulty.pin_operating_point();
+    }
+
+    /// This Project's Model with its Controls at the given rotations, built as `Processor` does.
+    fn model_netlist(rotations: &[f32]) -> Netlist {
+        assert_eq!(rotations.len(), model::CONTROLS.len());
+        let plain: Vec<f64> = model::CONTROLS
+            .iter()
+            .zip(rotations)
+            .map(|(spec, &r)| spec.plain(r))
+            .collect();
+        let mut n = Netlist::default();
+        model::circuit(&mut n);
+        let pots = n.pots.clone();
+        model::pots(&plain, &mut |name, ohms| {
+            let index = pots.iter().find(|p| p.0 == name).unwrap().1;
+            n.elements[index] = match n.elements[index] {
+                Element::Resistor(a, b, _) => Element::Resistor(a, b, ohms.max(1.0)),
+                _ => unreachable!(),
+            };
+        });
+        n
+    }
+
+    /// Control rotations to measure over: every combination of 0, 0.1, 0.5, 0.9 and 1 when there
+    /// are at most 125 of them, otherwise the five combinations with every Control alike and 120
+    /// drawn from a fixed pseudo-random sequence.
+    fn control_grid() -> Vec<Vec<f32>> {
+        const GRID: [f32; 5] = [0.0, 0.1, 0.5, 0.9, 1.0];
+        const MAX_COMBINATIONS: usize = 125;
+        let controls = model::CONTROLS.len();
+        if controls <= 3 {
+            let count = GRID.len().pow(controls as u32);
+            return (0..count)
+                .map(|k| {
+                    (0..controls)
+                        .map(|c| GRID[k / GRID.len().pow(c as u32) % GRID.len()])
+                        .collect()
+                })
+                .collect();
+        }
+        let mut grid: Vec<Vec<f32>> = GRID.iter().map(|&g| vec![g; controls]).collect();
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        while grid.len() < MAX_COMBINATIONS {
+            grid.push(
+                (0..controls)
+                    .map(|_| {
+                        state = state
+                            .wrapping_mul(6_364_136_223_846_793_005)
+                            .wrapping_add(1_442_695_040_888_963_407);
+                        GRID[(state >> 33) as usize % GRID.len()]
+                    })
+                    .collect(),
+            );
+        }
+        grid
+    }
+
+    /// What a return to rest does once a Control has moved, for every Control of this Project's
+    /// Model at both ends of its travel. The rest state was solved at construction, so it is the
+    /// operating point of the old Control positions: the return puts exactly that state back, and
+    /// the circuit then settles to the operating point of the Controls as they are now, with no
+    /// further held sample. The cost is the transient of that settling, printed here in volts at
+    /// the output beside that of the pot change alone (`cargo test -p dsp -- --nocapture
+    /// return_to_rest`).
+    ///
+    /// Run at the base rate: the DC equations do not contain the rate, and settling takes seconds.
+    #[test]
+    fn return_to_rest_after_a_control_change_restores_the_point_solved_at_construction() {
+        const RATE: f64 = 48_000.0;
+        const SETTLE_SAMPLES: usize = 4 * 48_000;
+        let defaults: Vec<f32> = model::CONTROLS.iter().map(|c| c.default).collect();
+        // Largest distance between two circuits' capacitor voltages, from their history states.
+        let distance = |a: &Circuit, b: &Circuit| {
+            (0..a.x.len())
+                .map(|k| 2.0 * (a.x[k] - b.x[k]).abs() / a.gc2[k].abs())
+                .fold(0.0, f64::max)
+        };
+        for (control, spec) in model::CONTROLS.iter().enumerate() {
+            for end in [0.0f32, 1.0] {
+                let mut moved = defaults.clone();
+                moved[control] = end;
+                let (built, target) = (model_netlist(&defaults), model_netlist(&moved));
+                let fresh = Circuit::new(target.elements.clone(), (target.output, 0), RATE);
+                let mut c = Circuit::new(built.elements, (built.output, 0), RATE);
+                let (nx, at_construction) = (c.x.len(), c.rest.clone());
+                // Move the pots as `Processor::set_control` does, and let the circuit start to
+                // follow them.
+                for &(_, index) in &target.pots {
+                    let Element::Resistor(_, _, ohms) = target.elements[index] else {
+                        unreachable!()
+                    };
+                    c.set_resistor(index, ohms);
+                }
+                // For scale: the transient of the same pot change with no return to rest.
+                let mut undisturbed = c.clone();
+                let mut pot_transient = 0.0f64;
+                for _ in 0..SETTLE_SAMPLES {
+                    pot_transient = pot_transient.max((undisturbed.tick(0.0) - fresh.y).abs());
+                }
+                for _ in 0..480 {
+                    c.tick(0.0);
+                }
+                assert_eq!(c.failed_solves(), 0, "{} at {end}", spec.name);
+                // A state that no sample solves from, whatever the solve path: every sample's
+                // result is made non-finite. `MAX_CONSECUTIVE_HELD` of them bring the return.
+                c.lin[0] = f64::NAN;
+                for _ in 0..MAX_CONSECUTIVE_HELD {
+                    assert!(c.tick(0.0).is_finite());
+                }
+                assert_eq!(
+                    (c.failed_solves(), c.rest_restores()),
+                    (MAX_CONSECUTIVE_HELD as u64, 1),
+                    "{} at {end}",
+                    spec.name
+                );
+                // The state is the one solved at construction, not the present Controls' own.
+                assert_eq!(c.x, at_construction[..nx]);
+                assert_eq!(c.y, at_construction[at_construction.len() - 1]);
+                let stale_by = distance(&c, &fresh);
+                // Samples solve again (the matrices are rebuilt as a pot change rebuilds them).
+                c.update();
+                let mut transient = 0.0f64;
+                for _ in 0..SETTLE_SAMPLES {
+                    let y = c.tick(0.0);
+                    assert!(y.is_finite());
+                    transient = transient.max((y - fresh.y).abs());
+                }
+                let left = distance(&c, &fresh);
+                println!(
+                    "{} at {end}: restored state {stale_by:e} V from the present operating point, \
+                     {left:e} V after {} s, output transient {transient:e} V ({pot_transient:e} V \
+                     for the pot change alone)",
+                    spec.name,
+                    SETTLE_SAMPLES as f64 / RATE
+                );
+                assert_eq!(c.failed_solves(), MAX_CONSECUTIVE_HELD as u64, "held after the return");
+                assert_eq!(c.rest_restores(), 1);
+                // The rows are unpinned after a pot change, so the circuit settles to where they
+                // rest, which `MAX_PIN_VOLTS` allows to be that far from the operating point.
+                assert!(
+                    left <= 1e-3 * stale_by + MAX_PIN_VOLTS,
+                    "{} at {end}: {left} V from the present operating point, started {stale_by} V away",
+                    spec.name
+                );
+            }
+        }
+    }
+
+    /// A pot change rebuilds the rows without the pin: from then on they are the rows of an
+    /// unpinned build, even when the pot goes back to where it was.
+    #[test]
+    fn a_pot_change_drops_the_pin() {
+        let defaults: Vec<f32> = model::CONTROLS.iter().map(|c| c.default).collect();
+        let n = model_netlist(&defaults);
+        let mut c = Circuit::new(n.elements.clone(), (n.output, 0), 576_000.0);
+        let mut unpinned = c.clone();
+        unpinned.update();
+        for &(_, index) in &n.pots {
+            let Element::Resistor(_, _, ohms) = n.elements[index] else {
+                unreachable!()
+            };
+            c.set_resistor(index, 2.0 * ohms);
+            c.set_resistor(index, ohms);
+            c.tick(0.0);
+            assert_eq!(c.lin, unpinned.lin);
+        }
+    }
+
+    /// Room the measurement must leave under each bound, in every Project. The step's is small:
+    /// the Class A Transistor Drive's last step reaches 0.37 of `MAX_DC_STEP`.
+    const DC_STEP_HEADROOM: f64 = 2.0;
+    const DC_RESIDUAL_HEADROOM: f64 = 30.0;
+    const PIN_HEADROOM: f64 = 50.0;
+
+    /// Every combination in `control_grid`, at the factor the Processor uses for each base rate:
+    /// the Model's Circuit is accepted by the constructor's checks with room to spare. Prints the
+    /// worst last Newton step, DC residual and pin distance, which is what `MAX_DC_STEP`,
+    /// `MAX_DC_RESIDUAL` and `MAX_PIN_VOLTS` are set from. Up to 500 DC solves: minutes without
+    /// optimization, so run it with `cargo test --release -p dsp -- --ignored --nocapture
+    /// dc_bounds`. The plain test run still builds the Model at both ends of every Control, in
+    /// `processor::tests::silence_stays_at_rest`.
+    #[test]
+    #[ignore]
+    fn dc_bounds_over_controls_and_rates() {
+        let grid = control_grid();
+        assert!(!grid.is_empty() && grid.len() <= 125);
+        for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let circuit_rate = rate * crate::oversample::factor_for(rate) as f64;
+            let (mut step, mut residual, mut pin) = (0.0f64, 0.0f64, 0.0f64);
+            for rotations in &grid {
+                let n = model_netlist(rotations);
+                let mut c = Circuit::new(n.elements, (n.output, 0), circuit_rate);
+                residual = residual.max(c.dc_residual());
+                step = step.max(c.solve_operating_point());
+                // The constructor pinned `lin`; build it again without the pin to measure it.
+                c.update();
+                pin = pin.max(c.pin_operating_point());
+            }
+            println!(
+                "{rate} Hz, {} combinations: last Newton step {step:e}, DC residual {residual:e}, pin {pin:e} V",
+                grid.len()
+            );
+            assert!(step < MAX_DC_STEP / DC_STEP_HEADROOM, "last Newton step {step}");
+            assert!(
+                residual < MAX_DC_RESIDUAL / DC_RESIDUAL_HEADROOM,
+                "DC residual {residual}"
+            );
+            assert!(pin < MAX_PIN_VOLTS / PIN_HEADROOM, "pin distance {pin} V");
         }
     }
 }

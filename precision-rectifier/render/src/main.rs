@@ -69,14 +69,28 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     .map_err(|e| e.to_string())?;
     let mut left: Vec<f32> = samples.iter().step_by(channels).copied().collect();
-    let mut right: Vec<f32> = samples.iter().skip(channels - 1).step_by(channels).copied().collect();
+    // A mono file has no right channel: an empty buffer costs the processor nothing.
+    let mut right: Vec<f32> = if channels == 2 {
+        samples.iter().skip(1).step_by(2).copied().collect()
+    } else {
+        Vec::new()
+    };
 
     let mut processor = Processor::new(spec.sample_rate as f64, &rot);
     // Run past the end by the latency so the output lines up with the input.
     let latency = processor.latency();
     left.extend(std::iter::repeat_n(0.0, latency));
-    right.extend(std::iter::repeat_n(0.0, latency));
+    if channels == 2 {
+        right.extend(std::iter::repeat_n(0.0, latency));
+    }
     processor.process(&mut left, &mut right);
+    // A held sample is not the Circuit's response; do not write a capture that contains one.
+    let failed = processor.failed_solves();
+    if failed > 0 {
+        return Err(format!(
+            "the solver failed on {failed} circuit-rate samples and held them; no output written"
+        ));
+    }
 
     let out_spec = hound::WavSpec {
         bits_per_sample: 32,

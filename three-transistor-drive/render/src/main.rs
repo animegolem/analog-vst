@@ -85,10 +85,10 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     processor.process(&mut left, &mut right);
     // A held sample is not the Circuit's response; do not write a capture that contains one.
-    let failed = processor.failed_samples();
+    let failed = processor.failed_solves();
     if failed > 0 {
         return Err(format!(
-            "the solver did not converge on {failed} circuit-rate samples; no output written"
+            "the solver failed on {failed} circuit-rate samples and held them; no output written"
         ));
     }
 

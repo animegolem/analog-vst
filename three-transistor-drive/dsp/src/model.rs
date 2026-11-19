@@ -173,7 +173,7 @@ mod tests {
                 sum_sq += y * y;
             }
         }
-        assert_eq!(c.failures(), 0, "every sample converged");
+        assert_eq!(c.failed_solves(), 0, "every sample converged");
         let rms = (sum_sq / (to - from) as f64).sqrt();
         assert!((max - 11.683_84).abs() < 2e-3, "positive clip {max}");
         assert!((min + 10.754_58).abs() < 2e-3, "negative clip {min}");
@@ -181,7 +181,7 @@ mod tests {
         println!("clip levels: max {max:.5} V, min {min:.5} V, rms {rms:.5} V");
     }
 
-    /// The solver's own iteration bound, as `set_joint_limit` accepts it.
+    /// The solver's own iteration bound, as `limit_joint_iterations` accepts it.
     const JOINT_LIMIT: usize = 200;
 
     /// The 0 dBFS, 1 kHz test tone at the circuit's rate.
@@ -189,16 +189,18 @@ mod tests {
         5.0 * (std::f64::consts::TAU * 1000.0 * k as f64 / MIN_CIRCUIT_RATE).sin()
     }
 
-    /// The joint solve is made to fail on every sample for 2 ms of the full-drive 5 V sine, by
+    /// The joint solve is made to fail on 1000 samples in a row of the full-drive 5 V sine, by
     /// lowering its iteration bound to 1 (with the real bound of 200 no input found so far makes
-    /// it fail). Each failed sample must repeat the previous output and leave the circuit's state
-    /// alone. The state is checked through its consequences: with the bound restored, the circuit
-    /// must carry on exactly like a twin that was simply never given those 2 ms. The two share
-    /// their capacitor states and differ only in the solver's starting point, so their outputs
-    /// agree to the solver's precision. Measured: 9216 of 9216 samples failed, and the outputs
-    /// over the following 5 ms were equal (difference 0 V).
+    /// it fail). 1000 is under the 1024 in a row at which the Solver gives up holding and goes
+    /// back to its operating point. Each failed sample must repeat the previous output and leave
+    /// the circuit's state alone. The state is checked through its consequences: with the bound
+    /// restored, the circuit must carry on exactly like a twin that was simply never given those
+    /// samples. The two share their capacitor states and differ only in the solver's starting
+    /// point, so their outputs agree to the solver's precision. Both meet the same jump in the
+    /// input, 78 degrees of the sine, where the window ends.
     #[test]
     fn failed_solves_hold_the_state_and_the_next_samples_recover() {
+        const HELD: usize = 1000;
         let (mut c, _) = build(1.0, &[]);
         let (mut skipped, _) = build(1.0, &[]);
         let at = |ms: f64| (ms * 1e-3 * MIN_CIRCUIT_RATE) as usize;
@@ -207,37 +209,29 @@ mod tests {
             last = c.tick(sine(k));
             assert_eq!(last, skipped.tick(sine(k)));
         }
-        assert_eq!(c.failures(), 0);
+        assert_eq!(c.failed_solves(), 0);
 
-        c.set_joint_limit(1);
-        for k in at(5.0)..at(7.0) {
+        c.limit_joint_iterations(1);
+        for k in at(5.0)..at(5.0) + HELD {
             assert_eq!(
                 c.tick(sine(k)),
                 last,
                 "sample {k}: a failed sample repeats the last output"
             );
         }
-        assert_eq!(
-            c.failures(),
-            (at(7.0) - at(5.0)) as u64,
-            "every sample in the window failed"
-        );
+        assert_eq!(c.failed_solves(), HELD as u64, "every sample in the window failed");
+        assert_eq!(c.rest_restores(), 0, "the window is too short for a return to rest");
         assert!(last.is_finite() && last.abs() < 13.0);
 
-        // 2 ms is two whole periods, so the twin's input continues without a jump.
-        c.set_joint_limit(JOINT_LIMIT);
+        c.limit_joint_iterations(JOINT_LIMIT);
         let mut worst = 0.0f64;
-        for k in at(7.0)..at(12.0) {
+        for k in at(5.0) + HELD..at(10.0) + HELD {
             let (y, want) = (c.tick(sine(k)), skipped.tick(sine(k)));
             assert!(y.is_finite() && y.abs() < 13.0, "sample {k}: {y}");
             worst = worst.max((y - want).abs());
         }
-        assert_eq!(
-            c.failures(),
-            (at(7.0) - at(5.0)) as u64,
-            "no failure after the bound is restored"
-        );
-        assert_eq!(skipped.failures(), 0);
+        assert_eq!(c.failed_solves(), HELD as u64, "no failure after the bound is restored");
+        assert_eq!(skipped.failed_solves(), 0);
         assert!(
             worst < 1e-6,
             "difference to the twin that skipped the window: {worst:e} V"
@@ -264,7 +258,7 @@ mod tests {
             worst = worst.max((y - rest).abs());
         }
         assert!(worst < 1e-6, "largest distance from rest: {worst:e} V");
-        assert_eq!(c.failures(), 0);
+        assert_eq!(c.failed_solves(), 0);
         println!("largest distance from rest: {worst:e} V");
     }
 }

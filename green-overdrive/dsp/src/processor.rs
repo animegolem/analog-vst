@@ -13,13 +13,13 @@ pub struct Processor {
 }
 
 impl Processor {
-    /// Builds the circuit at its DC operating point for the given knob rotations. Allocates; call
-    /// off the audio thread.
+    /// Builds the circuit at its DC operating point for the given knob rotations. A NaN rotation
+    /// is replaced by that Control's default. Allocates; call off the audio thread.
     pub fn new(sample_rate: f64, rotations: &[f32]) -> Self {
         let controls: Vec<f64> = model::CONTROLS
             .iter()
             .zip(rotations)
-            .map(|(spec, &r)| spec.plain(r))
+            .map(|(spec, &r)| spec.plain(if r.is_nan() { spec.default } else { r }))
             .collect();
         let mut netlist = Netlist::default();
         model::circuit(&mut netlist);
@@ -47,8 +47,12 @@ impl Processor {
         }
     }
 
-    /// Sets a control by knob rotation. Allocation-free.
+    /// Sets a control by knob rotation. Allocation-free. A NaN rotation is rejected: the Control
+    /// keeps its value. (Infinite rotations clamp to the ends of travel like any out-of-range one.)
     pub fn set_control(&mut self, index: usize, rotation: f32) {
+        if rotation.is_nan() {
+            return;
+        }
         let value = model::CONTROLS[index].plain(rotation);
         if self.controls[index] == value {
             return;
@@ -64,13 +68,32 @@ impl Processor {
         });
     }
 
+    /// Processes one block in place. A non-finite input sample is treated as silence (0) before
+    /// it reaches the oversampling filters, so it cannot linger in their history or in the circuit.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         let scale = model::VOLTS_PER_FULL_SCALE;
         for ((circuit, os), buf) in self.channels.iter_mut().zip([left, right]) {
             for x in buf.iter_mut() {
-                *x = (os.process(*x as f64 * scale, |u| circuit.tick(u)) / scale) as f32;
+                let u = if x.is_finite() { *x as f64 * scale } else { 0.0 };
+                *x = (os.process(u, |u| circuit.tick(u)) / scale) as f32;
             }
         }
+    }
+
+    /// Circuit samples since construction, over both channels, whose solve failed and were held
+    /// at the last valid state and output (see `Circuit::tick`). Saturates. Zero in normal use.
+    pub fn failed_solves(&self) -> u64 {
+        self.channels
+            .iter()
+            .fold(0, |n, (circuit, _)| n.saturating_add(circuit.failed_solves()))
+    }
+
+    /// Times since construction, over both channels, that a circuit was put back at its DC
+    /// operating point because it could not leave a held state (see `Circuit::tick`). Saturates.
+    pub fn rest_restores(&self) -> u64 {
+        self.channels
+            .iter()
+            .fold(0, |n, (circuit, _)| n.saturating_add(circuit.rest_restores()))
     }
 
     /// Delay in samples from the oversampling filters.
@@ -88,25 +111,94 @@ impl Processor {
 mod tests {
     use super::*;
 
+    const RATE: f64 = 48_000.0;
+
+    fn defaults() -> Vec<f32> {
+        model::CONTROLS.iter().map(|c| c.default).collect()
+    }
+
+    fn sine(len: usize, peak: f32) -> Vec<f32> {
+        (0..len)
+            .map(|k| peak * (std::f32::consts::TAU * 1000.0 * k as f32 / RATE as f32).sin())
+            .collect()
+    }
+
     /// With no input the circuit stays at its operating point, wherever each control sits. A drift
     /// of 1e-6 full scale is 10 dB under a -40 dBFS tone once a control mutes the signal by 100 dB.
     #[test]
     fn silence_stays_at_rest() {
-        let defaults: Vec<f32> = model::CONTROLS.iter().map(|c| c.default).collect();
-        for control in 0..defaults.len() {
+        let mut settings = vec![("defaults".to_string(), defaults())];
+        for (control, spec) in model::CONTROLS.iter().enumerate() {
             for end in [0.0, 1.0] {
-                let mut rotations = defaults.clone();
+                let mut rotations = defaults();
                 rotations[control] = end;
-                let mut processor = Processor::new(96_000.0, &rotations);
-                let (mut left, mut right) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
-                processor.process(&mut left, &mut right);
-                let drift = left.iter().fold(0.0f32, |m, y| m.max((y - left[0]).abs()));
-                assert!(
-                    drift < 1e-10,
-                    "{} at {end}: drifts by {drift}",
-                    model::CONTROLS[control].name
-                );
+                settings.push((format!("{} at {end}", spec.name), rotations));
             }
         }
+        for (name, rotations) in settings {
+            let mut processor = Processor::new(96_000.0, &rotations);
+            let (mut left, mut right) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
+            processor.process(&mut left, &mut right);
+            let drift = left.iter().fold(0.0f32, |m, y| m.max((y - left[0]).abs()));
+            assert!(drift < 1e-10, "{name}: drifts by {drift}");
+            assert_eq!(processor.failed_solves(), 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn non_finite_input_samples_are_silence() {
+        // One NaN and one infinity in a driven block, then silence. The output must equal, bit
+        // for bit, that of a twin fed 0 in their place: nothing lingers in the filters or circuit.
+        let mut dirty = sine(2048, 0.5);
+        dirty.extend(std::iter::repeat_n(0.0, 2048));
+        let mut clean = dirty.clone();
+        (dirty[700], dirty[1300]) = (f32::NAN, f32::INFINITY);
+        (clean[700], clean[1300]) = (0.0, 0.0);
+        let (mut a, mut b) = (Processor::new(RATE, &defaults()), Processor::new(RATE, &defaults()));
+        let (mut dirty_r, mut clean_r) = (dirty.clone(), clean.clone());
+        a.process(&mut dirty, &mut dirty_r);
+        b.process(&mut clean, &mut clean_r);
+        assert!(dirty.iter().all(|y| y.is_finite()));
+        assert_eq!(dirty, clean);
+        assert_eq!(dirty_r, clean_r);
+        assert_eq!(a.failed_solves(), 0);
+    }
+
+    #[test]
+    fn nan_input_then_silence_stays_at_rest() {
+        // A NaN first sample, then silence: every output is finite and equals, bit for bit, that
+        // of a twin fed silence throughout, which `silence_stays_at_rest` shows to be at rest.
+        let mut left = vec![0.0f32; 24_000];
+        left[0] = f32::NAN;
+        let mut right = left.clone();
+        let mut p = Processor::new(RATE, &defaults());
+        p.process(&mut left, &mut right);
+        let (mut silent_l, mut silent_r) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
+        Processor::new(RATE, &defaults()).process(&mut silent_l, &mut silent_r);
+        assert!(left.iter().chain(&right).all(|y| y.is_finite()));
+        assert_eq!(left, silent_l);
+        assert_eq!(right, silent_r);
+        assert_eq!(p.failed_solves(), 0);
+    }
+
+    #[test]
+    fn nan_control_is_rejected_without_a_panic() {
+        // NaN at construction means the default; NaN later keeps the value in force. A Model
+        // with no Controls has nothing to reject and only has to build and run.
+        let all_nan = vec![f32::NAN; model::CONTROLS.len()];
+        let mut p = Processor::new(RATE, &all_nan);
+        let at_default: Vec<f64> = model::CONTROLS.iter().map(|c| c.plain(c.default)).collect();
+        assert_eq!(p.plain_controls(), at_default);
+        for (index, spec) in model::CONTROLS.iter().enumerate() {
+            p.set_control(index, 0.9);
+            assert_eq!(p.plain_controls()[index], spec.plain(0.9));
+            p.set_control(index, f32::NAN);
+            assert_eq!(p.plain_controls()[index], spec.plain(0.9));
+            p.set_control(index, f32::INFINITY);
+            assert_eq!(p.plain_controls()[index], spec.plain(1.0));
+        }
+        let (mut left, mut right) = (sine(512, 0.5), sine(512, 0.5));
+        p.process(&mut left, &mut right);
+        assert!(left.iter().chain(&right).all(|y| y.is_finite()));
     }
 }
