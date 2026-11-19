@@ -69,8 +69,11 @@ const MAX_DC_STEP: f64 = 1e-7;
 /// 2.55 mA that cancel to 1.4e-16 A. The DC equations do not contain the sample rate, and the
 /// values were the same at every rate. The fault-injection test `wrong_operating_point_is_not_pinned` solves an
 /// emitter follower with 1e-13 A too much flowing into its bias node, 0.5 nV off, and measures
-/// 5.6e-11; with 100 nA, 0.5 mV off, it measures 5.6e-5. The bound is 36 times the worst
-/// measured residual and 56 times under that of the smaller fault.
+/// 5.6e-11; with 100 nA, 0.5 mV off, it measures 5.6e-5. The bound is 35.8 times the worst
+/// residual of that scan and 56 times under that of the smaller fault. The scan's worst is not
+/// a ceiling: 50,000 Level positions of the Class A Transistor Drive at one rate gave 2.93e-14,
+/// 34 times under the bound (and a last step of 4.6e-11); the two other Models with one Control
+/// gave the scan's own worst values again.
 const MAX_DC_RESIDUAL: f64 = 1e-12;
 
 /// Largest distance, in volts, between a row of the discrete system at the operating point and
@@ -1615,7 +1618,7 @@ mod tests {
             "emitter-base junction is forward biased: vb={vb}"
         );
         assert!(
-            vc > 0.5 && vc < vb,
+            vc > 0.5 && vc < 8.0 && vc < vb,
             "forward-active, collector between ground and the base: vc={vc}"
         );
         let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
@@ -2219,8 +2222,9 @@ mod tests {
     /// Room the measurement must leave under each bound, in every Project. Measured over
     /// `scan_positions`, the least room on the step is 50 times (Green Diode Overdrive) and on
     /// the pin distance 87 times (the same). The residual's is set by the Class A Transistor
-    /// Drive, which leaves 36 times; the next are the Four Stage Sustainer at 180 and the
-    /// Feedback Pair Drive at 669, and the other five leave more than 1000.
+    /// Drive, which leaves 35.8 times over these positions and 34 over 50,000 Level positions;
+    /// the next are the Four Stage Sustainer at 180 and the Feedback Pair Drive at 669, and the
+    /// other five leave more than 1000.
     const DC_STEP_HEADROOM: f64 = 10.0;
     const DC_RESIDUAL_HEADROOM: f64 = 30.0;
     const PIN_HEADROOM: f64 = 50.0;
