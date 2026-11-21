@@ -1192,7 +1192,10 @@ impl Circuit {
                 step[r] *= scale;
                 v[r] -= step[r];
             }
-            done = dev.converged(&v[..np], &step[..np]);
+            // A step that was scaled down says nothing about how far the solution is: a
+            // transistor whose collector still has volts to travel would pass on its base step
+            // alone. Only a full Newton step can end the iteration.
+            done = scale == 1.0 && dev.converged(&v[..np], &step[..np]);
             // Currents at the updated v from the linearization; exact to second order in the step.
             for r in 0..np {
                 cur[r] = i[r] - (0..np).map(|c| j[r * np + c] * step[c]).sum::<f64>();
@@ -1812,6 +1815,72 @@ mod tests {
             assert!((c.tick(0.0) - rest).abs() < 1e-6);
         }
         assert_eq!(c.failed_solves(), MAX_CONSECUTIVE_HELD as u64 + 10);
+    }
+
+    /// Largest distance, in volts, of any port from its own equation v = p + K i(v) after an
+    /// accepted `tick`, with the currents evaluated at the accepted port voltages (not the
+    /// tangent-line currents the solve kept, which satisfy the linearised equation by
+    /// construction). `acc` still holds the linear part of each port voltage.
+    fn port_residual(c: &Circuit) -> f64 {
+        let (nx, nn) = (c.caps.len(), c.ports.len());
+        let base = nx + 2;
+        let mut exact = vec![0.0; nn];
+        let (mut i, mut j) = ([0.0; 2], [0.0; 4]);
+        for &(dev, first) in &c.devices {
+            let np = dev.ports();
+            dev.eval(&c.v[first..first + np], &mut i, &mut j);
+            exact[first..first + np].copy_from_slice(&i[..np]);
+        }
+        (0..nn)
+            .map(|r| (c.v[r] - c.acc[nx + 1 + r] - dot(&c.port_v.row(r)[base..], &exact)).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn a_damped_device_step_is_not_convergence() {
+        // A transistor with its base held by a voltage source and the input coupled into its
+        // collector, solved per device. An input that alternates by 2 V moves the collector by
+        // volts each sample while the base does not move at all. The device's Newton step is
+        // then scaled down to 0.1 V and its base part is zero: judged on the scaled step, the
+        // sample was accepted with the collector volts from its equation.
+        let mut c = Circuit::new(
+            vec![
+                Element::Dc(1, 0, 18.0),
+                Element::Resistor(1, 2, 10e3),
+                Element::Dc(3, 0, 0.65),
+                Element::Input(4, 0),
+                Element::Capacitor(4, 2, 1e-6),
+                Element::Npn {
+                    c: 2,
+                    b: 3,
+                    e: 0,
+                    model: Q2N3904,
+                },
+            ],
+            (2, 0),
+            96_000.0,
+        );
+        assert!(!c.joint && c.devices.len() == 1);
+        let rest = c.tick(0.0);
+        assert!(rest > 5.0 && rest < 13.0, "collector rests at {rest} V");
+        let (mut worst, mut largest_move) = (0.0f64, 0.0f64);
+        for k in 0..2000 {
+            let before = c.v[0];
+            c.tick(if k % 2 == 0 { 1.0 } else { -1.0 });
+            largest_move = largest_move.max((c.v[0] - before).abs());
+            worst = worst.max(port_residual(&c));
+        }
+        assert_eq!(
+            c.failed_solves(),
+            0,
+            "every sample is accepted, so every residual counts"
+        );
+        // Measured: 8.9e-16 V. The solve that judged the scaled step left 2.0 V.
+        assert!(worst < 1e-9, "an accepted sample is {worst} V from its port equation");
+        assert!(
+            largest_move > 1.0,
+            "the collector port moves {largest_move} V a sample, so the 0.1 V scale acts"
+        );
     }
 
     #[test]
