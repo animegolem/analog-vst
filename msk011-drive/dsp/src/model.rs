@@ -8,12 +8,22 @@ pub const CLAP_ID: &str = "local.analog-to-vst.class-a-transistor-drive";
 pub const VST3_ID: [u8; 16] = *b"ClassATransist01";
 pub const VOLTS_PER_FULL_SCALE: f64 = 5.0;
 pub const CONTROLS: &[ControlSpec] = &[ControlSpec {
-    name: "Level", taper: Taper::Audio { max: 1.0 }, default: 0.5,
+    name: "Level",
+    taper: Taper::Audio { max: 1.0 },
+    default: 0.5,
 }];
 
 // Fairchild/onsemi 2N5088: RE is unspecified in the published model (SPICE default 0).
-const Q: BjtModel = BjtModel { is: 5.911e-15, bf: 1122.0, br: 1.271, vaf: 62.37,
-    ikf: 14.92e-3, rb: 10.0, rc: 1.61, re: 0.0 };
+const Q: BjtModel = BjtModel {
+    is: 5.911e-15,
+    bf: 1122.0,
+    br: 1.271,
+    vaf: 62.37,
+    ikf: 14.92e-3,
+    rb: 10.0,
+    rc: 1.61,
+    re: 0.0,
+};
 
 pub fn circuit(n: &mut Netlist) {
     n.supply("vp", 12.0);
@@ -31,7 +41,7 @@ pub fn circuit(n: &mut Netlist) {
     n.resistor("vn", "jack4", 100e3);
     n.resistor("jack4", "b4", 99999.0);
     n.resistor("b4", "0", 1.0);
-    for (b,e) in [("b1","e1"),("b2","e2"),("b3","e3"),("b4","e4")] {
+    for (b, e) in [("b1", "e1"), ("b2", "e2"), ("b3", "e3"), ("b4", "e4")] {
         n.npn("vp", b, e, Q);
         n.resistor(e, "vn", 22e3);
         n.resistor(e, "sum", 47e3);
