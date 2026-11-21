@@ -152,17 +152,31 @@ mod tests {
 
     #[test]
     fn non_finite_input_samples_are_silence() {
-        // A NaN and both infinities in a driven block, at different places in the two channels,
-        // then silence. The output must equal, bit for bit, that of a twin fed 0 in their place:
-        // nothing lingers in the filters or circuit, and neither channel leaks into the other.
+        // A NaN in a silent lead-in (the second sample of all, before any signal has reached the
+        // filters), then a NaN and both infinities in a driven block, at different places in the
+        // two channels, then silence. The output must equal, bit for bit, that of a twin fed 0 in
+        // their place: nothing lingers in the filters or circuit, and neither channel leaks into
+        // the other.
+        const LEAD_IN: usize = 64;
         for (name, rotations) in positions() {
-            let mut clean = sine(2048, 0.5);
+            let mut clean = vec![0.0f32; LEAD_IN];
+            clean.extend(sine(2048, 0.5));
             clean.extend(std::iter::repeat_n(0.0, 2048));
             let (mut dirty, mut dirty_r, mut clean_r) = (clean.clone(), clean.clone(), clean.clone());
-            for (at, bad) in [(700, f32::NAN), (1300, f32::INFINITY), (1301, f32::NEG_INFINITY)] {
+            for (at, bad) in [
+                (1, f32::NAN),
+                (LEAD_IN + 700, f32::NAN),
+                (LEAD_IN + 1300, f32::INFINITY),
+                (LEAD_IN + 1301, f32::NEG_INFINITY),
+            ] {
+                assert!(clean[at] != 0.0 || at < LEAD_IN, "sample {at} is in the driven block");
                 (dirty[at], clean[at]) = (bad, 0.0);
             }
-            for (at, bad) in [(0, f32::NAN), (1000, f32::NEG_INFINITY), (3000, f32::INFINITY)] {
+            for (at, bad) in [
+                (0, f32::NAN),
+                (LEAD_IN + 1000, f32::NEG_INFINITY),
+                (LEAD_IN + 3000, f32::INFINITY),
+            ] {
                 (dirty_r[at], clean_r[at]) = (bad, 0.0);
             }
             let (mut a, mut b) = (Processor::new(RATE, &rotations), Processor::new(RATE, &rotations));
