@@ -131,17 +131,18 @@ mod tests {
         assert_eq!(n.pots.len(), 1);
     }
 
-    /// ngspice 45 operating point of `reference/circuit.cir` (`uv run harness op`, input at 0 V),
-    /// as printed, in volts. It does not depend on LEVEL: C12 blocks DC.
+    /// ngspice 45 `.op` of `reference/circuit.cir` with the input at 0 V, in volts: default
+    /// temperature and gmin, `.options reltol=1e-9 abstol=1e-16 vntol=1e-12 itl1=5000`, printed
+    /// with `set numdgt=15`. It does not depend on LEVEL: C12 blocks DC.
     const NGSPICE_OP: &[(&str, f64)] = &[
-        ("b6", -1.24163e-03),
-        ("sum", -1.24163e-03),
-        ("tail", -7.07129e-01),
-        ("c7", 1.132140e+01),
-        ("vo", 1.474020e-02),
-        ("b5", -5.01813e+00),
-        ("c5", 5.842434e+00),
-        ("e5", -5.82281e+00),
+        ("b6", -1.241628220108e-03),
+        ("sum", -1.241628220108e-03),
+        ("tail", -7.071294917901e-01),
+        ("c7", 1.132140418088e+01),
+        ("vo", 1.474019806199e-02),
+        ("b5", -5.018125496281e+00),
+        ("c5", 5.842434060808e+00),
+        ("e5", -5.822812075005e+00),
         ("out", 0.0),
         ("outinv", 0.0),
         ("jack", 0.0),
@@ -151,19 +152,21 @@ mod tests {
     #[test]
     fn operating_point_matches_ngspice() {
         // First use of the Solver's PNP path in a Model: Q3's operating point sets `c7` and `vo`.
-        // The Solver has no gmin on the transistors' junctions and a rounded thermal voltage;
-        // ngspice prints six or seven digits. 20 uV covers those on every node. Measured: at
-        // most 12.4 uV (`c7`). RE = 0 adds no resistor, as in ngspice: going from the earlier
-        // 0.001 ohm stand-in to none moved `c5` by -2.236 uV and `e5` by +2.245 uV, and ngspice
-        // moves them by -2.237 and +2.245 uV between RE=1m and RE=0.
-        const TOLERANCE_V: f64 = 20e-6;
+        // RE = 0 adds no resistor, as in ngspice, and the Model has ngspice's thermal voltage
+        // (`netlist::VT`). What is left is ngspice's gmin across the transistors' junctions
+        // (1e-12 S), which the Model does not have. Measured: at most 1.07 uV (`vo`); with gmin
+        // lowered to 1e-18 in ngspice, within 0.1 nV. The bound leaves 1.9 times the 1.07 uV.
+        // With the rounded thermal voltage this Solver had before (0.0258646 V) the worst node
+        // was 9.6 uV off (`e5`; 12.4 uV at `c7` against the seven-digit values this test then
+        // held) and the bound was 20 uV.
+        const TOLERANCE_V: f64 = 2e-6;
         let (mut n, c) = build(0.5);
         let op = c.operating_point().to_vec();
         for &(name, expected) in NGSPICE_OP {
             let v = op[n.node(name) - 1];
             assert!(
                 (v - expected).abs() < TOLERANCE_V,
-                "{name}: model {v:.9} V, ngspice {expected:.9} V"
+                "{name}: model {v:.12} V, ngspice {expected:.12} V"
             );
         }
     }

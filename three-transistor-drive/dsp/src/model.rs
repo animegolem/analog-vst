@@ -120,11 +120,14 @@ mod tests {
     }
 
     /// The model's DC operating point against ngspice 45 on `reference/circuit.cir` (input 0 V;
-    /// the bias is the same at every drive value because C3 blocks DC). This is the first circuit
-    /// here with a PNP. The model differs from the netlist in one known way worth a few
-    /// microvolts: its thermal voltage constant is rounded. RE = 0 adds no resistor, as in
-    /// ngspice. Measured: every node within 8.6 uV (7.4 uV while RE = 0 was entered as 0.001 ohm,
-    /// which hid 1.2 uV of the other difference at `c1`).
+    /// the bias is the same at every drive value because C3 blocks DC; default temperature and
+    /// gmin, `.options reltol=1e-9 abstol=1e-16 vntol=1e-12`). This is the first circuit here
+    /// with a PNP. RE = 0 adds no resistor, as in ngspice, and the Model has ngspice's thermal
+    /// voltage (`netlist::VT`). What is left is ngspice's gmin across the transistors' junctions
+    /// (1e-12 S), which the Model does not have. Measured: every node within 1.15 uV (`a`); with
+    /// gmin lowered to 1e-18 in ngspice, within 0.1 nV. The bound leaves 1.7 times the 1.15 uV.
+    /// With the rounded thermal voltage this Solver had before (0.0258646 V) the worst node,
+    /// `c1`, was 8.6 uV off and the bound was 20 uV.
     #[test]
     fn operating_point_matches_ngspice() {
         const SPICE: &[(&str, f64)] = &[
@@ -143,7 +146,7 @@ mod tests {
             for (&(name, volts), &node) in SPICE.iter().zip(&nodes) {
                 let got = op[node - 1];
                 assert!(
-                    (got - volts).abs() < 20e-6,
+                    (got - volts).abs() < 2e-6,
                     "drive {drive}, node {name}: model {got:.9} V, ngspice {volts:.9} V"
                 );
             }

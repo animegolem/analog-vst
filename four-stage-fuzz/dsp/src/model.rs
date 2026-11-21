@@ -96,3 +96,123 @@ pub fn pots(plain: &[f64], set: &mut dyn FnMut(&'static str, f64)) {
     set("RVOLTOP", 100e3 * (1.0 - v));
     set("RVOLBOT", 100e3 * v);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::circuit::{Circuit, Element};
+    use crate::oversample::MIN_CIRCUIT_RATE;
+
+    /// The named nodes of `reference/circuit.cir` that the Model also has.
+    const NODES: &[&str] = &[
+        "vcc", "in", "jack", "i1", "b4", "c4", "e4", "sustop", "sus", "susbot", "s3", "b3", "c3", "d3", "e3", "s2",
+        "b2", "c2", "d2", "e2", "hi", "lo", "tone", "b1", "c1", "e1", "voltop", "out",
+    ];
+
+    /// ngspice 45 `.op` of `reference/circuit.cir` with the input at 0 V, at every Setting of
+    /// `settings.txt`: the Setting's name, its knob rotations, and the voltage of each of `NODES`.
+    /// Default temperature and gmin; `.options reltol=1e-9 abstol=1e-16 vntol=1e-12 itl1=5000`
+    /// so that the printed digits are the solution's (set numdgt=15).
+    #[rustfmt::skip]
+    const NGSPICE_OP: &[(&str, &[f32], &[f64])] = &[
+        ("default", &[0.5, 0.5, 0.5], &[
+            9.000000000000e+00, 0.0, 0.0, 0.0,
+            6.392128502115e-01, 7.098997262201e+00, 1.764999932728e-02, 0.0,
+            0.0, 0.0, 7.178917930948e-01, 7.178917930948e-01,
+            4.281373110529e+00, 4.281373108666e+00, 6.970256501031e-02, 7.131704069173e-01,
+            7.131704069173e-01, 4.245051661332e+00, 4.245051657076e+00, 6.629945175726e-02,
+            5.800691711137e-01, 3.216747221631e+00, 1.898408196372e+00, 1.675868427914e+00,
+            4.287568657197e+00, 1.037639674749e+00, 0.0, 0.0,
+        ]),
+        ("sustain_min", &[0.0, 0.5, 0.5], &[
+            9.000000000000e+00, 0.0, 0.0, 0.0,
+            6.392128502115e-01, 7.098997262201e+00, 1.764999932728e-02, 0.0,
+            0.0, 0.0, 7.178917930948e-01, 7.178917930948e-01,
+            4.281373110529e+00, 4.281373108666e+00, 6.970256501031e-02, 7.131704069173e-01,
+            7.131704069173e-01, 4.245051661332e+00, 4.245051657076e+00, 6.629945175726e-02,
+            5.800691711137e-01, 3.216747221631e+00, 1.898408196372e+00, 1.675868427914e+00,
+            4.287568657197e+00, 1.037639674749e+00, 0.0, 0.0,
+        ]),
+        ("sustain_max", &[1.0, 0.5, 0.5], &[
+            9.000000000000e+00, 0.0, 0.0, 0.0,
+            6.392128502115e-01, 7.098997262201e+00, 1.764999932728e-02, 0.0,
+            0.0, 0.0, 7.178917930948e-01, 7.178917930948e-01,
+            4.281373110529e+00, 4.281373108666e+00, 6.970256501031e-02, 7.131704069173e-01,
+            7.131704069173e-01, 4.245051661332e+00, 4.245051657076e+00, 6.629945175726e-02,
+            5.800691711137e-01, 3.216747221631e+00, 1.898408196372e+00, 1.675868427914e+00,
+            4.287568657197e+00, 1.037639674749e+00, 0.0, 0.0,
+        ]),
+        ("tone_min", &[0.5, 0.0, 0.5], &[
+            9.000000000000e+00, 0.0, 0.0, 0.0,
+            6.392128502115e-01, 7.098997262201e+00, 1.764999932728e-02, 0.0,
+            0.0, 0.0, 7.178917930948e-01, 7.178917930948e-01,
+            4.281373110529e+00, 4.281373108666e+00, 6.970256501031e-02, 7.131704361750e-01,
+            7.131704361750e-01, 4.245051885953e+00, 4.245051881698e+00, 6.629947269976e-02,
+            5.800655989156e-01, 3.216753778787e+00, 3.216727412168e+00, 1.675868427914e+00,
+            4.287568657197e+00, 1.037639674749e+00, 0.0, 0.0,
+        ]),
+        ("tone_max", &[0.5, 1.0, 0.5], &[
+            9.000000000000e+00, 0.0, 0.0, 0.0,
+            6.392128502115e-01, 7.098997262201e+00, 1.764999932728e-02, 0.0,
+            0.0, 0.0, 7.178917930948e-01, 7.178917930948e-01,
+            4.281373110529e+00, 4.281373108666e+00, 6.970256501031e-02, 7.131704361750e-01,
+            7.131704361750e-01, 4.245051885953e+00, 4.245051881698e+00, 6.629947269976e-02,
+            5.800655989157e-01, 3.216753778785e+00, 5.800919655338e-01, 1.675868427914e+00,
+            4.287568657197e+00, 1.037639674749e+00, 0.0, 0.0,
+        ]),
+        ("volume_min", &[0.5, 0.5, 0.0], &[
+            9.000000000000e+00, 0.0, 0.0, 0.0,
+            6.392128502115e-01, 7.098997262201e+00, 1.764999932728e-02, 0.0,
+            0.0, 0.0, 7.178917930948e-01, 7.178917930948e-01,
+            4.281373110529e+00, 4.281373108666e+00, 6.970256501031e-02, 7.131704069173e-01,
+            7.131704069173e-01, 4.245051661332e+00, 4.245051657076e+00, 6.629945175726e-02,
+            5.800691711137e-01, 3.216747221631e+00, 1.898408196372e+00, 1.675868427914e+00,
+            4.287568657197e+00, 1.037639674749e+00, 0.0, 0.0,
+        ]),
+        ("volume_max", &[0.5, 0.5, 1.0], &[
+            9.000000000000e+00, 0.0, 0.0, 0.0,
+            6.392128502115e-01, 7.098997262201e+00, 1.764999932728e-02, 0.0,
+            0.0, 0.0, 7.178917930948e-01, 7.178917930948e-01,
+            4.281373110529e+00, 4.281373108666e+00, 6.970256501031e-02, 7.131704069173e-01,
+            7.131704069173e-01, 4.245051661332e+00, 4.245051657076e+00, 6.629945175726e-02,
+            5.800691711137e-01, 3.216747221631e+00, 1.898408196372e+00, 1.675868427914e+00,
+            4.287568657197e+00, 1.037639674749e+00, 0.0, 0.0,
+        ]),
+    ];
+
+    /// The Model's DC operating point against ngspice's, at every Setting and every named node.
+    /// The Model has ngspice's thermal voltage (`netlist::VT`) and no gmin across the transistors'
+    /// junctions, which ngspice has (1e-12 S). Measured: at most 2.10 uV (`c4`, the same at every
+    /// Setting); with gmin lowered to 1e-18 in ngspice every node agrees within 9.1 nV. The bound
+    /// leaves 1.9 times that. With the rounded thermal voltage this Solver had before
+    /// (0.0258646 V) `c4` was 61 uV off and this test fails.
+    #[test]
+    fn operating_point_matches_ngspice() {
+        const TOLERANCE_V: f64 = 4e-6;
+        for &(setting, rotations, expected) in NGSPICE_OP {
+            assert_eq!((rotations.len(), expected.len()), (CONTROLS.len(), NODES.len()));
+            let plain: Vec<f64> = CONTROLS.iter().zip(rotations).map(|(c, &r)| c.plain(r)).collect();
+            let mut n = Netlist::default();
+            circuit(&mut n);
+            let pot_elements = n.pots.clone();
+            pots(&plain, &mut |name, ohms| {
+                let index = pot_elements.iter().find(|p| p.0 == name).expect("pot in the netlist").1;
+                let Element::Resistor(_, _, r) = &mut n.elements[index] else {
+                    panic!("pot {name} is not a resistor");
+                };
+                *r = ohms.max(1.0);
+            });
+            let nodes: Vec<usize> = NODES.iter().map(|name| n.node(name)).collect();
+            let c = Circuit::new(n.elements, (n.output, 0), MIN_CIRCUIT_RATE);
+            for ((name, &volts), node) in NODES.iter().zip(expected).zip(nodes) {
+                let v = c.operating_point()[node - 1];
+                assert!(
+                    (v - volts).abs() < TOLERANCE_V,
+                    "{setting}, node {name}: model {v:.12} V, ngspice {volts:.12} V"
+                );
+            }
+            // The comparison is not vacuous: the transistors are biased, far from 0 V.
+            assert!(expected.iter().any(|v| v.abs() > 0.5), "{setting}");
+        }
+    }
+}

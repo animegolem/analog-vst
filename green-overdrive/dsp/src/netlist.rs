@@ -5,8 +5,16 @@
 
 use crate::circuit::{Bjt, Element, Node};
 
-/// Thermal voltage at 27 C, SPICE's default temperature.
-pub const VT: f64 = 0.025_864_6;
+/// Thermal voltage kT/q at 27 C, exactly as ngspice 45 computes it at its default temperature:
+/// `CONSTboltz / CHARGE` (`CONSTKoverQ`, src/main.c) times `27.0 + CONSTCtoK` (`REFTEMP`), with
+/// `CONSTboltz` 1.38064852e-23, `CHARGE` 1.6021766208e-19 and `CONSTCtoK` 273.15 from
+/// src/include/ngspice/const.h at the ngspice-45 tag. The arithmetic is written out so that the
+/// value has ngspice's bits: 0.025864917007157463. Checked against the binary: an ideal diode
+/// (IS = 1e-14, N = 1, RS = 0, gmin = 1e-30) forced to 0.6 V carries 1.187196289587074e-4 A in
+/// ngspice 45, which gives this value back to 1 part in 1e16. The rounded 0.0258646 this Solver
+/// used before is 1.2 parts in 1e5 lower, which put the Models' operating points up to 224 uV
+/// from ngspice's.
+pub const VT: f64 = (1.380_648_52e-23 / 1.602_176_620_8e-19) * (27.0 + 273.15);
 
 /// SPICE `D` model parameters: saturation current, emission coefficient, series resistance.
 /// `cjo` is added as a fixed capacitance (zero-bias junction capacitance).
@@ -245,6 +253,14 @@ impl Netlist {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thermal_voltage_is_the_one_ngspice_computes() {
+        assert_eq!(VT.to_bits(), 0.025_864_917_007_157_463_f64.to_bits(), "{VT:e}");
+        // The diode current that ngspice 45 prints for 0.6 V across IS = 1e-14, N = 1.
+        let i = 1e-14 * ((0.6 / VT).exp() - 1.0);
+        assert!((i / 1.187_196_289_587_074e-4 - 1.0).abs() < 1e-13, "{i:e}");
+    }
 
     #[test]
     fn a_terminal_resistance_of_zero_adds_no_resistor_and_no_node() {
